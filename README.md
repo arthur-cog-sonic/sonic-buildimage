@@ -62,7 +62,7 @@ All SONiC project build pipelines can be found at [Download Portal for SONiC Ima
 Following are the instructions on how to build an [(ONIE)](https://github.com/opencomputeproject/onie)
 compatible network operating system (NOS) installer image for network switches,
 and also how to build docker images running inside the NOS.
-Note that SONiC images are build per ASIC platform.
+Note that SONiC images are built per ASIC platform.
 Switches using the same ASIC platform share a common image.
 For a list of supported switches and ASIC, please refer to this [list](https://github.com/sonic-net/SONiC/wiki/Supported-Devices-and-Platforms)
 
