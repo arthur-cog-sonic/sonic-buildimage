@@ -29,11 +29,11 @@ resources:
     type: github
     name: sonic-net/sonic-mgmt
     ref: master
-    endpoint: sonic-net
+    endpoint: arthur-cog-sonic
   - repository: buildimage
     type: github
-    name: sonic-net/sonic-buildimage
-    endpoint: sonic-net
+    name: arthur-cog-sonic/sonic-buildimage
+    endpoint: arthur-cog-sonic
     ref: master
 
 parameters:
@@ -60,7 +60,7 @@ variables:
 
 stages:
 - stage: BuildVS
-  pool: sonicso1ES-amd64
+  pool: sonic-build
   jobs:
   - template: .azure-pipelines/azure-pipelines-build.yml
     parameters:
@@ -68,37 +68,39 @@ stages:
       jobGroups:
       - name: vs
 
-- stage: Build
-  pool: sonicso1ES-amd64
-  dependsOn: []
-  jobs:
-  - template: .azure-pipelines/azure-pipelines-build.yml
-    parameters:
-      buildOptions: 'USERNAME=admin SONIC_BUILD_JOBS=$(nproc) ${{ variables.VERSION_CONTROL_OPTIONS }}'
-      jobGroups:
-      - name: broadcom
-        variables:
-          swi_image: yes
-          docker_syncd_rpc_image: yes
-          platform_rpc: brcm
-          INCLUDE_RESTAPI: y
-      - name: mellanox
-        variables:
-          dbg_image: yes
-          docker_syncd_rpc_image: yes
-          platform_rpc: mlnx
-      - name: marvell-prestera-arm64
-        pool: sonicso1ES-arm64
-        variables:
-           PLATFORM_NAME: marvell-prestera
-           PLATFORM_ARCH: arm64
-      - name: marvell-prestera-armhf
-        pool: sonicso1ES-armhf
-        timeoutInMinutes: 1200
-        variables:
-          PLATFORM_NAME: marvell-prestera
-          PLATFORM_ARCH: armhf
-          INCLUDE_RESTAPI: y
+# Platform builds commented out - no DUTs available for testing
+# - stage: Build
+#   pool: sonic-build
+#   dependsOn: []
+#   jobs:
+#   - template: .azure-pipelines/azure-pipelines-build.yml
+#     parameters:
+#       buildOptions: 'USERNAME=admin SONIC_BUILD_JOBS=$(nproc) ${{ variables.VERSION_CONTROL_OPTIONS }}'
+#       jobGroups:
+#       - name: broadcom
+#         variables:
+#           swi_image: yes
+#           docker_syncd_rpc_image: yes
+#           platform_rpc: brcm
+#           INCLUDE_RESTAPI: y
+#       - name: mellanox
+#         variables:
+#           dbg_image: yes
+#           docker_syncd_rpc_image: yes
+#           platform_rpc: mlnx
+# ARM builds commented out - no hardware available
+#       - name: marvell-prestera-arm64
+#         pool: sonic-build
+#         variables:
+#            PLATFORM_NAME: marvell-prestera
+#            PLATFORM_ARCH: arm64
+#       - name: marvell-prestera-armhf
+#         pool: sonic-build
+#         timeoutInMinutes: 1200
+#         variables:
+#           PLATFORM_NAME: marvell-prestera
+#           PLATFORM_ARCH: armhf
+#           INCLUDE_RESTAPI: y
 
 - stage: Test
   dependsOn: BuildVS
@@ -118,7 +120,7 @@ stages:
 
   jobs:
   - job: debug_variables
-    pool: sonic-ubuntu-1c
+    pool: sonic-build
     displayName: "Debug PTF_MODIFIED Variable"
     steps:
     - script: |
@@ -134,7 +136,7 @@ stages:
       displayName: "Debug PTF_MODIFIED Variable"
 
   - job:
-    pool: sonictest
+    pool: sonic-build
     displayName: "vstest"
     condition: false # agent pool don't work. disable this job to unblock PRs.
     timeoutInMinutes: 60
