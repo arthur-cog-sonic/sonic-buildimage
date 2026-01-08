@@ -25,11 +25,12 @@ name: $(TeamProject)_$(Build.DefinitionName)_$(SourceBranchName)_$(Date:yyyyMMdd
 
 resources:
   repositories:
-  - repository: sonic-mgmt
-    type: github
-    name: sonic-net/sonic-mgmt
-    ref: master
-    endpoint: arthur-cog-sonic
+  # sonic-mgmt commented out - repository not available in arthur-cog-sonic org
+  # - repository: sonic-mgmt
+  #   type: github
+  #   name: sonic-net/sonic-mgmt
+  #   ref: master
+  #   endpoint: arthur-cog-sonic
   - repository: buildimage
     type: github
     name: arthur-cog-sonic/sonic-buildimage
@@ -194,9 +195,9 @@ stages:
         testResultsFiles: '**/tr.xml'
         testRunTitle: vstest
 
-  # KVM based PR test jobs
-  - template: .azure-pipelines/pr_test_template.yml@sonic-mgmt
-    parameters:
-      CHECKOUT_SONIC_MGMT: ${{ parameters.CHECKOUT_SONIC_MGMT }}
-      GLOBAL_PARAMS:
-        PTF_MODIFIED: $(PTF_MODIFIED)
+  # KVM based PR test jobs - commented out, sonic-mgmt not available in arthur-cog-sonic org
+  # - template: .azure-pipelines/pr_test_template.yml@sonic-mgmt
+  #   parameters:
+  #     CHECKOUT_SONIC_MGMT: ${{ parameters.CHECKOUT_SONIC_MGMT }}
+  #     GLOBAL_PARAMS:
+  #       PTF_MODIFIED: $(PTF_MODIFIED)
