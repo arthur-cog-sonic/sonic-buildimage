@@ -1,0 +1,151 @@
+# Template to post build failure logs to GitHub PR comments
+# This template should be included in build pipelines and runs on failure
+# It formats logs neatly using collapsible sections to avoid overwhelming comments
+
+parameters:
+- name: jobName
+  type: string
+  default: '$(System.JobDisplayName)'
+- name: logDirectory
+  type: string
+  default: 'target'
+- name: maxLogLines
+  type: number
+  default: 200
+- name: githubToken
+  type: string
+  default: '$(GITHUB_TOKEN)'
+
+steps:
+- bash: |
+    set -x
+    
+    # Only run for PR builds
+    if [ -z "$SYSTEM_PULLREQUEST_PULLREQUESTNUMBER" ]; then
+      echo "Not a PR build, skipping GitHub comment"
+      exit 0
+    fi
+    
+    # Check if GitHub token is available
+    if [ -z "$GITHUB_TOKEN" ]; then
+      echo "##vso[task.logissue type=warning]GITHUB_TOKEN not set, skipping PR comment"
+      exit 0
+    fi
+    
+    PR_NUMBER="$SYSTEM_PULLREQUEST_PULLREQUESTNUMBER"
+    REPO_NAME="$BUILD_REPOSITORY_NAME"
+    JOB_NAME="${{ parameters.jobName }}"
+    BUILD_ID="$BUILD_BUILDID"
+    BUILD_URL="$SYSTEM_TEAMFOUNDATIONCOLLECTIONURI$SYSTEM_TEAMPROJECT/_build/results?buildId=$BUILD_BUILDID"
+    MAX_LINES=${{ parameters.maxLogLines }}
+    LOG_DIR="${{ parameters.logDirectory }}"
+    
+    echo "Posting failure logs to PR #$PR_NUMBER in $REPO_NAME"
+    echo "Job: $JOB_NAME"
+    echo "Build URL: $BUILD_URL"
+    
+    # Create temporary file for the comment body
+    COMMENT_FILE=$(mktemp)
+    
+    # Start building the comment
+    cat > "$COMMENT_FILE" << 'HEADER'
+    ## :x: Build Failed
+    
+    HEADER
+    
+    # Add job info
+    cat >> "$COMMENT_FILE" << EOF
+    **Job:** \`$JOB_NAME\`
+    **Build:** [#$BUILD_ID]($BUILD_URL)
+    **Commit:** \`$BUILD_SOURCEVERSION\`
+    
+    EOF
+    
+    # Find and process log files
+    LOG_COUNT=0
+    if [ -d "$LOG_DIR" ]; then
+      # Find all .log files
+      LOG_FILES=$(find "$LOG_DIR" -name "*.log" -type f 2>/dev/null | head -10)
+      
+      if [ -n "$LOG_FILES" ]; then
+        echo "### Build Logs" >> "$COMMENT_FILE"
+        echo "" >> "$COMMENT_FILE"
+        
+        for log_file in $LOG_FILES; do
+          LOG_COUNT=$((LOG_COUNT + 1))
+          log_name=$(basename "$log_file")
+          log_size=$(wc -l < "$log_file" 2>/dev/null || echo "0")
+          
+          echo "<details>" >> "$COMMENT_FILE"
+          echo "<summary><b>$log_name</b> ($log_size lines)</summary>" >> "$COMMENT_FILE"
+          echo "" >> "$COMMENT_FILE"
+          echo '```' >> "$COMMENT_FILE"
+          
+          # Extract last N lines, focusing on errors
+          if [ "$log_size" -gt "$MAX_LINES" ]; then
+            echo "... (showing last $MAX_LINES of $log_size lines) ..." >> "$COMMENT_FILE"
+            tail -n "$MAX_LINES" "$log_file" >> "$COMMENT_FILE"
+          else
+            cat "$log_file" >> "$COMMENT_FILE"
+          fi
+          
+          echo '```' >> "$COMMENT_FILE"
+          echo "</details>" >> "$COMMENT_FILE"
+          echo "" >> "$COMMENT_FILE"
+        done
+      fi
+    fi
+    
+    # If no log files found, try to capture recent build output
+    if [ "$LOG_COUNT" -eq 0 ]; then
+      echo "No log files found in $LOG_DIR" >> "$COMMENT_FILE"
+      echo "" >> "$COMMENT_FILE"
+      echo "Check the [full build logs]($BUILD_URL) for details." >> "$COMMENT_FILE"
+    fi
+    
+    # Add footer with artifact link
+    cat >> "$COMMENT_FILE" << EOF
+    
+    ---
+    <sub>View [full build artifacts]($BUILD_URL&view=artifacts) for complete logs.</sub>
+    EOF
+    
+    # Read the comment content
+    COMMENT_BODY=$(cat "$COMMENT_FILE")
+    
+    # Escape the comment body for JSON
+    COMMENT_JSON=$(echo "$COMMENT_BODY" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+    
+    # Post comment to GitHub PR
+    API_URL="https://api.github.com/repos/$REPO_NAME/issues/$PR_NUMBER/comments"
+    
+    HTTP_CODE=$(curl -s -o /tmp/github_response.json -w "%{http_code}" \
+      -X POST \
+      -H "Authorization: token $GITHUB_TOKEN" \
+      -H "Accept: application/vnd.github.v3+json" \
+      -H "Content-Type: application/json" \
+      -d "{\"body\": $COMMENT_JSON}" \
+      "$API_URL")
+    
+    if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+      echo "Successfully posted comment to PR #$PR_NUMBER"
+      COMMENT_URL=$(cat /tmp/github_response.json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("html_url", ""))')
+      echo "Comment URL: $COMMENT_URL"
+    else
+      echo "##vso[task.logissue type=warning]Failed to post comment to GitHub (HTTP $HTTP_CODE)"
+      cat /tmp/github_response.json
+    fi
+    
+    # Cleanup
+    rm -f "$COMMENT_FILE" /tmp/github_response.json
+    
+  displayName: 'Post failure logs to GitHub PR'
+  condition: failed()
+  env:
+    GITHUB_TOKEN: ${{ parameters.githubToken }}
+    SYSTEM_PULLREQUEST_PULLREQUESTNUMBER: $(System.PullRequest.PullRequestNumber)
+    BUILD_REPOSITORY_NAME: $(Build.Repository.Name)
+    BUILD_BUILDID: $(Build.BuildId)
+    BUILD_SOURCEVERSION: $(Build.SourceVersion)
+    SYSTEM_TEAMFOUNDATIONCOLLECTIONURI: $(System.TeamFoundationCollectionUri)
+    SYSTEM_TEAMPROJECT: $(System.TeamProject)

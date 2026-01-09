@@ -138,3 +138,7 @@ jobs:
     artifact: sonic-buildimage.${{ parameters.platform}}.logs@$(System.JobAttempt)
     displayName: "Archive build logs"
     condition: failed()
+  - template: post-failure-to-github.yml
+    parameters:
+      jobName: '${{ parameters.platform }}'
+      logDirectory: '$(Build.ArtifactStagingDirectory)'
