@@ -407,7 +407,8 @@ RC_t authmgrAuthHistoryLogPurgeAll();
  * @returns  SUCCESS  
  * @returns  FAILURE
  *
- * @comments
+ * @comments Y2K38 Fix: Changed pTimeStamp from uint32* to uint64* to prevent
+ *           timestamp overflow on January 19, 2038.
  *
  * @notes 
  *
@@ -416,7 +417,7 @@ RC_t authmgrAuthHistoryLogPurgeAll();
  *********************************************************************/
 RC_t authmgrAuthHistoryLogTimestampGet(uint32 intIfNum,
                                         uint32 entryIndex,
-                                        uint32 *pTimeStamp);
+                                        uint64 *pTimeStamp);
 
 /*********************************************************************
  * @purpose  Get the VlanId from the authmgr Auth History table
