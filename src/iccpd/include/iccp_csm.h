@@ -33,6 +33,9 @@
 #include <time.h>
 #include <pthread.h>
 
+/* Y2K38 Safety: Include compile-time checks for 64-bit time_t */
+#include "../include/iccp_time.h"
+
 #include "../include/app_csm.h"
 #include "../include/msg_format.h"
 #include "../include/port.h"
