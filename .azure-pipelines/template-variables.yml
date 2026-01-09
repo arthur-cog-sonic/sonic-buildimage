@@ -3,7 +3,9 @@ variables:
   COMMON_LIB_BUILD_ENVS: 'bookworm trixie'
   SONIC_SLAVE_DOCKER_DRIVER: 'overlay2'
   SONIC_BUILD_RETRY_COUNT: 3
-  SONIC_BUILD_RETRY_INTERVAL: 600
+  # Changed from 600 to 120 seconds on 2026-01-09 for faster feedback on transient failures
+  # If this causes issues (rate limiting, resource contention), consider reverting to 600
+  SONIC_BUILD_RETRY_INTERVAL: 120
   DOCKER_BUILDKIT: 0
   DOCKER_BUILD_TIMEOUT: 3600
   MIRROR_SNAPSHOT: y
