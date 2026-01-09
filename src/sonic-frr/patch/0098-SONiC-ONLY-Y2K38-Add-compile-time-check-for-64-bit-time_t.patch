@@ -18,12 +18,11 @@ Signed-off-by: Devin AI <devin@cognition.ai>
  1 file changed, 12 insertions(+)
 
 diff --git a/lib/libfrr.h b/lib/libfrr.h
-index 1234567..abcdefg 100644
 --- a/lib/libfrr.h
 +++ b/lib/libfrr.h
-@@ -10,6 +10,18 @@
- #include "sigevent.h"
- #include "vector.h"
+@@ -18,6 +18,18 @@
+ #include "hook.h"
+ #include "northbound.h"
  
 +/*
 + * Y2K38 Compile-Time Check
