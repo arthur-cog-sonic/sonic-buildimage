@@ -1,5 +1,5 @@
 From 9594553c4eb4c7edbce087b5e28d7bc076180f1b Mon Sep 17 00:00:00 2001
-From: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+From: Devin AI <devin@cognition.ai>
 Date: Fri, 9 Jan 2026 17:44:40 +0000
 Subject: [PATCH] SONiC-ONLY: Y2K38: Add compile-time check for 64-bit time_t
 
@@ -44,4 +44,3 @@ index a6da720e5..bbeb2a409 100644
  #endif
 -- 
 2.34.1
-
