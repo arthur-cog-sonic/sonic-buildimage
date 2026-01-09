@@ -21,42 +21,43 @@ steps:
     echo "##vso[task.setvariable variable=latest_tag]$latest_tag"
     echo "##vso[task.setvariable variable=docker_tags]$docker_tags"
   displayName: 'Set trigger build variables'
-- task: TriggerBuild@4
-  inputs:
-    definitionIsInCurrentTeamProject: false
-    teamProject: internal
-    tfsServer: $(System.CollectionUri)
-    buildDefinition: 'publish-artifacts'
-    queueBuildForUserThatTriggeredBuild: true
-    ignoreSslCertificateErrors: false
-    useSameSourceVersion: false
-    useCustomSourceVersion: false
-    useSameBranch: false
-    waitForQueuedBuildsToFinish: false
-    storeInEnvironmentVariable: true
-    authenticationMethod: 'Personal Access Token'
-    password: '$(system.accesstoken)'
-    enableBuildInQueueCondition: false
-    dependentOnSuccessfulBuildCondition: false
-    dependentOnFailedBuildCondition: false
-    checkbuildsoncurrentbranch: false
-    failTaskIfConditionsAreNotFulfilled: false
-    buildParameters: ''
-    templateParameters: |
-      pipelineContext: {"buildId":"$(Build.BuildId)",
-        "pipelineId":"$(System.DefinitionId)",
-        "project": "$(System.TeamProject)",
-        "branchName":"$(Build.SourceBranchName)"},
-      artifactContext: {"artifactName":"${{ parameters.artifactName }}",
-        "artifactPatterns":"**/*.bin\n
-              **/*.swi\n
-              **/*.raw\n
-              **/*.img.gz\n
-              **/*-rpc.gz\n
-              **/*.deb"},
-      publishContext: {"publishPrefix":"${{ parameters.publishPrefix }}",
-        "keepArtifactName":false,
-        "dockerImagePatterns":"target/*-rpc.gz",
-        "dockerTags":"$(docker_tags)",
-        "version":"$(sonic_version)",
-        "latestTag":"$(latest_tag)"}
+# TriggerBuild task commented out - 'internal' project and 'publish-artifacts' pipeline don't exist in Cisco-SONiC-PoC org
+# - task: TriggerBuild@4
+#   inputs:
+#     definitionIsInCurrentTeamProject: false
+#     teamProject: internal
+#     tfsServer: $(System.CollectionUri)
+#     buildDefinition: 'publish-artifacts'
+#     queueBuildForUserThatTriggeredBuild: true
+#     ignoreSslCertificateErrors: false
+#     useSameSourceVersion: false
+#     useCustomSourceVersion: false
+#     useSameBranch: false
+#     waitForQueuedBuildsToFinish: false
+#     storeInEnvironmentVariable: true
+#     authenticationMethod: 'Personal Access Token'
+#     password: '$(system.accesstoken)'
+#     enableBuildInQueueCondition: false
+#     dependentOnSuccessfulBuildCondition: false
+#     dependentOnFailedBuildCondition: false
+#     checkbuildsoncurrentbranch: false
+#     failTaskIfConditionsAreNotFulfilled: false
+#     buildParameters: ''
+#     templateParameters: |
+#       pipelineContext: {"buildId":"$(Build.BuildId)",
+#         "pipelineId":"$(System.DefinitionId)",
+#         "project": "$(System.TeamProject)",
+#         "branchName":"$(Build.SourceBranchName)"},
+#       artifactContext: {"artifactName":"${{ parameters.artifactName }}",
+#         "artifactPatterns":"**/*.bin\n
+#               **/*.swi\n
+#               **/*.raw\n
+#               **/*.img.gz\n
+#               **/*-rpc.gz\n
+#               **/*.deb"},
+#       publishContext: {"publishPrefix":"${{ parameters.publishPrefix }}",
+#         "keepArtifactName":false,
+#         "dockerImagePatterns":"target/*-rpc.gz",
+#         "dockerTags":"$(docker_tags)",
+#         "version":"$(sonic_version)",
+#         "latestTag":"$(latest_tag)"}
