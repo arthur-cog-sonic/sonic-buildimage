@@ -130,7 +130,7 @@ jobs:
         condition: or(failed(), canceled())
         artifact: 'sonic-buildimage.$(GROUP_NAME)$(GROUP_EXTNAME)$(System.JobAttempt)'
         displayName: "Archive failed sonic image"
-      - template: .azure-pipelines/post-failure-to-github.yml@buildimage
+      - template: post-failure-to-github.yml
         parameters:
           jobName: '$(GROUP_NAME)$(GROUP_EXTNAME)'
           logDirectory: '$(Build.ArtifactStagingDirectory)/target'
