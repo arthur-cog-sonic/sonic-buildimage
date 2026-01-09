@@ -12,6 +12,33 @@ This test suite verifies that:
 1. All timestamp types are properly sized (64-bit or larger)
 2. Timestamp arithmetic works correctly beyond 2038
 3. Compile-time checks are in place for time_t size
+
+HOW TO RUN ALL Y2K38 TESTS:
+
+1. Python Integration Tests (this script):
+   python3 tests/y2k38/run_all_y2k38_tests.py
+
+2. sonic-platform-common Python Tests:
+   cd src/sonic-platform-common && python3 -m pytest tests/test_y2k38.py -v
+
+3. sonic-wpa-supplicant C Tests (requires build environment):
+   cd src/wpasupplicant/sonic-wpa-supplicant/tests
+   make test-y2k38 && ./test-y2k38
+
+4. sonic-stp C++ Tests (requires build environment):
+   cd src/sonic-stp/tests
+   g++ -I../include -o test_y2k38 test_y2k38.cpp && ./test_y2k38
+
+5. sonic-sairedis GTest (requires build environment):
+   cd src/sonic-sairedis && make check
+
+6. iccpd C Tests (requires build environment):
+   cd src/iccpd/tests
+   gcc -I../include -o test_y2k38 test_y2k38.c && ./test_y2k38
+
+7. sonic-pac C Tests (requires build environment):
+   cd src/sonic-pac/authmgr/tests
+   gcc -o test_y2k38 test_y2k38.c && ./test_y2k38
 """
 
 import os
