@@ -1,5 +1,6 @@
-From: Devin AI <devin@cognition.ai>
-Date: Thu, 9 Jan 2026 10:37:00 +0000
+From 9594553c4eb4c7edbce087b5e28d7bc076180f1b Mon Sep 17 00:00:00 2001
+From: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+Date: Fri, 9 Jan 2026 17:44:40 +0000
 Subject: [PATCH] SONiC-ONLY: Y2K38: Add compile-time check for 64-bit time_t
 
 This patch adds a compile-time assertion to verify that time_t is at least
@@ -13,11 +14,13 @@ This compile-time check ensures that FRR is built on a system with 64-bit
 time_t support, or fails the build with a clear error message.
 
 Signed-off-by: Devin AI <devin@cognition.ai>
+Co-Authored-By: Arthur Poon <arthur.poon@windsurf.com>
 ---
  lib/libfrr.h | 12 ++++++++++++
  1 file changed, 12 insertions(+)
 
 diff --git a/lib/libfrr.h b/lib/libfrr.h
+index a6da720e5..bbeb2a409 100644
 --- a/lib/libfrr.h
 +++ b/lib/libfrr.h
 @@ -18,6 +18,18 @@
@@ -39,3 +42,6 @@ diff --git a/lib/libfrr.h b/lib/libfrr.h
  #ifdef __cplusplus
  extern "C" {
  #endif
+-- 
+2.34.1
+
