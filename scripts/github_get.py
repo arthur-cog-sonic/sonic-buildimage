@@ -14,7 +14,8 @@ def get(url, file_name=None, dir_name=None):
     :return: None
     :raises: Exception if the download fails
     '''
-    try:
+    try
+        # Missing colon above - syntax error
         response = requests.get(url)
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
