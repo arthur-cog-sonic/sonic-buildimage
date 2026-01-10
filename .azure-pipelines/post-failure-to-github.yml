@@ -12,9 +12,9 @@ parameters:
 - name: maxLogLines
   type: number
   default: 200
-- name: githubToken
-  type: string
-  default: '$(GITHUB_TOKEN)'
+- name: maxErrorLines
+  type: number
+  default: 50
 
 steps:
 - bash: |
@@ -38,6 +38,7 @@ steps:
     BUILD_ID="$BUILD_BUILDID"
     BUILD_URL="$SYSTEM_TEAMFOUNDATIONCOLLECTIONURI$SYSTEM_TEAMPROJECT/_build/results?buildId=$BUILD_BUILDID"
     MAX_LINES=${{ parameters.maxLogLines }}
+    MAX_ERROR_LINES=${{ parameters.maxErrorLines }}
     LOG_DIR="${{ parameters.logDirectory }}"
     
     echo "Posting failure logs to PR #$PR_NUMBER in $REPO_NAME"
@@ -47,48 +48,66 @@ steps:
     # Create temporary file for the comment body
     COMMENT_FILE=$(mktemp)
     
-    # Start building the comment
-    cat > "$COMMENT_FILE" << 'HEADER'
-    ## :x: Build Failed
+    # Start building the comment - compact header
+    {
+      echo "## :x: Build Failed: \`$JOB_NAME\`"
+      echo ""
+      echo "**Build:** [#$BUILD_ID]($BUILD_URL) | **Commit:** \`${BUILD_SOURCEVERSION:0:7}\`"
+      echo ""
+    } > "$COMMENT_FILE"
     
-    HEADER
-    
-    # Add job info
-    cat >> "$COMMENT_FILE" << EOF
-    **Job:** \`$JOB_NAME\`
-    **Build:** [#$BUILD_ID]($BUILD_URL)
-    **Commit:** \`$BUILD_SOURCEVERSION\`
-    
-    EOF
+    # Function to extract and format error lines from a log
+    extract_errors() {
+      local file="$1"
+      local max_lines="$2"
+      # Look for common error patterns and extract context
+      grep -n -i -E "(error|failed|fatal|exception|cannot|undefined|not found)" "$file" 2>/dev/null | head -n "$max_lines" || true
+    }
     
     # Find and process log files
     LOG_COUNT=0
+    TOTAL_ERRORS=0
+    
     if [ -d "$LOG_DIR" ]; then
-      # Find all .log files
-      LOG_FILES=$(find "$LOG_DIR" -name "*.log" -type f 2>/dev/null | head -10)
+      # Find all .log files, sorted by modification time (newest first)
+      LOG_FILES=$(find "$LOG_DIR" -name "*.log" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -10 | cut -d' ' -f2-)
       
       if [ -n "$LOG_FILES" ]; then
-        echo "### Build Logs" >> "$COMMENT_FILE"
-        echo "" >> "$COMMENT_FILE"
-        
         for log_file in $LOG_FILES; do
           LOG_COUNT=$((LOG_COUNT + 1))
           log_name=$(basename "$log_file")
           log_size=$(wc -l < "$log_file" 2>/dev/null || echo "0")
           
-          echo "<details>" >> "$COMMENT_FILE"
-          echo "<summary><b>$log_name</b> ($log_size lines)</summary>" >> "$COMMENT_FILE"
-          echo "" >> "$COMMENT_FILE"
-          echo '```' >> "$COMMENT_FILE"
+          # Extract errors first
+          ERRORS=$(extract_errors "$log_file" "$MAX_ERROR_LINES")
+          ERROR_COUNT=$(echo "$ERRORS" | grep -c . || echo "0")
+          TOTAL_ERRORS=$((TOTAL_ERRORS + ERROR_COUNT))
           
-          # Extract last N lines, focusing on errors
+          echo "<details>" >> "$COMMENT_FILE"
+          if [ "$ERROR_COUNT" -gt 0 ]; then
+            echo "<summary>:warning: <b>$log_name</b> ($ERROR_COUNT errors, $log_size lines total)</summary>" >> "$COMMENT_FILE"
+          else
+            echo "<summary><b>$log_name</b> ($log_size lines)</summary>" >> "$COMMENT_FILE"
+          fi
+          echo "" >> "$COMMENT_FILE"
+          
+          # Show errors section if any
+          if [ "$ERROR_COUNT" -gt 0 ]; then
+            echo "**Errors found:**" >> "$COMMENT_FILE"
+            echo '```' >> "$COMMENT_FILE"
+            echo "$ERRORS" >> "$COMMENT_FILE"
+            echo '```' >> "$COMMENT_FILE"
+            echo "" >> "$COMMENT_FILE"
+          fi
+          
+          # Show tail of log
+          echo "**Last $MAX_LINES lines:**" >> "$COMMENT_FILE"
+          echo '```' >> "$COMMENT_FILE"
           if [ "$log_size" -gt "$MAX_LINES" ]; then
-            echo "... (showing last $MAX_LINES of $log_size lines) ..." >> "$COMMENT_FILE"
             tail -n "$MAX_LINES" "$log_file" >> "$COMMENT_FILE"
           else
             cat "$log_file" >> "$COMMENT_FILE"
           fi
-          
           echo '```' >> "$COMMENT_FILE"
           echo "</details>" >> "$COMMENT_FILE"
           echo "" >> "$COMMENT_FILE"
@@ -96,19 +115,46 @@ steps:
       fi
     fi
     
-    # If no log files found, try to capture recent build output
+    # Also check for common build output locations
+    for extra_log in "/tmp/build.log" "$BUILD_SOURCESDIRECTORY/target/*.log"; do
+      if [ -f "$extra_log" ] 2>/dev/null; then
+        LOG_COUNT=$((LOG_COUNT + 1))
+        log_name=$(basename "$extra_log")
+        log_size=$(wc -l < "$extra_log" 2>/dev/null || echo "0")
+        
+        echo "<details>" >> "$COMMENT_FILE"
+        echo "<summary><b>$log_name</b> ($log_size lines)</summary>" >> "$COMMENT_FILE"
+        echo "" >> "$COMMENT_FILE"
+        echo '```' >> "$COMMENT_FILE"
+        if [ "$log_size" -gt "$MAX_LINES" ]; then
+          echo "... (showing last $MAX_LINES of $log_size lines) ..." >> "$COMMENT_FILE"
+          tail -n "$MAX_LINES" "$extra_log" >> "$COMMENT_FILE"
+        else
+          cat "$extra_log" >> "$COMMENT_FILE"
+        fi
+        echo '```' >> "$COMMENT_FILE"
+        echo "</details>" >> "$COMMENT_FILE"
+        echo "" >> "$COMMENT_FILE"
+      fi
+    done
+    
+    # If no log files found, provide helpful message
     if [ "$LOG_COUNT" -eq 0 ]; then
-      echo "No log files found in $LOG_DIR" >> "$COMMENT_FILE"
+      echo "<details>" >> "$COMMENT_FILE"
+      echo "<summary>:information_source: No log files found</summary>" >> "$COMMENT_FILE"
       echo "" >> "$COMMENT_FILE"
-      echo "Check the [full build logs]($BUILD_URL) for details." >> "$COMMENT_FILE"
+      echo "No \`.log\` files were found in \`$LOG_DIR\`." >> "$COMMENT_FILE"
+      echo "" >> "$COMMENT_FILE"
+      echo "The build may have failed before generating logs, or logs are stored elsewhere." >> "$COMMENT_FILE"
+      echo "</details>" >> "$COMMENT_FILE"
+      echo "" >> "$COMMENT_FILE"
     fi
     
-    # Add footer with artifact link
-    cat >> "$COMMENT_FILE" << EOF
-    
-    ---
-    <sub>View [full build artifacts]($BUILD_URL&view=artifacts) for complete logs.</sub>
-    EOF
+    # Add summary line
+    if [ "$TOTAL_ERRORS" -gt 0 ]; then
+      echo "---" >> "$COMMENT_FILE"
+      echo ":mag: **$TOTAL_ERRORS error(s)** found across **$LOG_COUNT log file(s)**" >> "$COMMENT_FILE"
+    fi
     
     # Read the comment content
     COMMENT_BODY=$(cat "$COMMENT_FILE")
