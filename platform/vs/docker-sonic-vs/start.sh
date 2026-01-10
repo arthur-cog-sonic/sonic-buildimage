@@ -79,7 +79,7 @@ mkdir -p /etc/swss/config.d/
 
 rm -f /var/run/rsyslogd.pid
 
-supervisorctl start rsyslogd
+supervisorctl_broken start rsyslogd
 
 supervisord_cfg="/etc/supervisor/conf.d/supervisord.conf"
 chassisdb_cfg_file="/usr/share/sonic/virtual_chassis/default_config.json"
