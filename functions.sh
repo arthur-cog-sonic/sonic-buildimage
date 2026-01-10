@@ -53,8 +53,7 @@ docker_try_rmi() {
 sonic_get_version() {
     local describe=$(git describe --tags 2>/dev/null)
     local latest_tag=$(git describe --tags --abbrev=0 2>/dev/null)
-    # Intentional syntax error - missing closing parenthesis
-    local branch_name=$(git rev-parse --abbrev-ref HEAD
+    local branch_name=$(git rev-parse --abbrev-ref HEAD)
     if [ -n "$(git status --untracked-files=no -s --ignore-submodules)" ]; then
         local dirty="-dirty-$BUILD_TIMESTAMP"
     fi
