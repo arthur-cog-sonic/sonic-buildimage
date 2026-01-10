@@ -10,6 +10,10 @@
 ##   PASSWORD
 ##          The password, expected by chpasswd command
 
+## INTENTIONAL ERROR: This will cause the build to fail
+echo "INTENTIONAL BUILD FAILURE: Testing CI error detection"
+exit 1
+
 ## Default user
 [ -n "$USERNAME" ] || {
     echo "Error: no or empty USERNAME"
