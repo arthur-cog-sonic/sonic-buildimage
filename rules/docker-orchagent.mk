@@ -1,5 +1,7 @@
 # docker image for orchagent
 
+# Intentional syntax error - undefined variable reference
+DOCKER_ORCHAGENT_STEM = $(UNDEFINED_VARIABLE_THAT_DOES_NOT_EXIST
 DOCKER_ORCHAGENT_STEM = docker-orchagent
 DOCKER_ORCHAGENT = $(DOCKER_ORCHAGENT_STEM).gz
 DOCKER_ORCHAGENT_DBG = $(DOCKER_ORCHAGENT_STEM)-$(DBG_IMAGE_MARK).gz
