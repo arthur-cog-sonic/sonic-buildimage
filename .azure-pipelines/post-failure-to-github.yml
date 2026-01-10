@@ -134,6 +134,7 @@ steps:
     else
       echo "##vso[task.logissue type=warning]Failed to post comment to GitHub (HTTP $HTTP_CODE)"
       cat /tmp/github_response.json
+      echo "##vso[task.complete result=SucceededWithIssues;]GitHub API call failed but build logs were archived"
     fi
     
     # Cleanup
