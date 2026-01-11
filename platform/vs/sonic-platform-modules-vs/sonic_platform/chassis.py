@@ -20,7 +20,8 @@ class Chassis(ChassisBase):
     """
     VS Platform-specific Chassis class
     """
-    def __init__(self):
+    def __init__(self)
+        # Missing colon above - intentional syntax error for testing
         ChassisBase.__init__(self)
         self.metadata_file = '/etc/sonic/vs_chassis_metadata.json'
         self.metadata = self._read_metadata()
