@@ -1,5 +1,8 @@
 $(LIBSAIREDIS)_DEB_BUILD_PROFILES += syncd vs
 
+# TEST: Intentional syntax error to break VS build
+$(error This is an intentional error to break the VS build for testing purposes)
+
 SYNCD_VS = syncd-vs_1.0.0_$(CONFIGURED_ARCH).deb
 $(SYNCD_VS)_RDEPENDS += $(LIBSAIREDIS) $(LIBSAIMETADATA) $(LIBSAIVS)
 
