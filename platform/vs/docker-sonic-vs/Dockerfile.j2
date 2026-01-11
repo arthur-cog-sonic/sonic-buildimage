@@ -1,6 +1,9 @@
 {% from "dockers/dockerfile-macros.j2" import install_debian_packages, install_python_wheels, copy_files, rsync_from_builder_stage %}
 ARG BASE=docker-swss-layer-bookworm-{{DOCKER_USERNAME}}:{{DOCKER_USERTAG}}
 
+# Intentional error for testing - invalid Dockerfile command
+RUN_INVALID_COMMAND this_will_fail
+
 FROM $BASE AS base
 
 ARG docker_container_name
