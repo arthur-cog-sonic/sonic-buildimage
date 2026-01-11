@@ -78,6 +78,21 @@ jobs:
       git submodule update --init --recursive
     displayName: 'Reset submodules'
   - script: |
+      set -o pipefail
+      
+      # Create log file to capture all build output (including early-stage errors)
+      BUILD_LOG="/tmp/build-output.log"
+      touch "$BUILD_LOG"
+      
+      # Function to run commands and capture output
+      run_with_logging() {
+        "$@" 2>&1 | tee -a "$BUILD_LOG"
+        return ${PIPESTATUS[0]}
+      }
+      
+      # Capture all output from this point forward
+      exec > >(tee -a "$BUILD_LOG") 2>&1
+      
       set -e
       sudo modprobe overlay
       sudo apt-get install -y acl
@@ -131,7 +146,14 @@ jobs:
     displayName: "Archive sonic image"
   - script: |
       set -x
-      find target -name "*.log" | xargs -I{} cp {} $(Build.ArtifactStagingDirectory)/
+      # Copy the main build output log (captures early-stage errors)
+      if [ -f /tmp/build-output.log ]; then
+        cp /tmp/build-output.log $(Build.ArtifactStagingDirectory)/
+      fi
+      # Copy any additional log files from target directory
+      if [ -d target ]; then
+        find target -name "*.log" | xargs -I{} cp {} $(Build.ArtifactStagingDirectory)/ 2>/dev/null || true
+      fi
     condition: failed()
     displayName: "Copy build logs"
   - publish: $(Build.ArtifactStagingDirectory)/
