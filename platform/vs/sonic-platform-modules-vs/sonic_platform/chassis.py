@@ -20,8 +20,7 @@ class Chassis(ChassisBase):
     """
     VS Platform-specific Chassis class
     """
-    def __init__(self)
-        # Missing colon above - intentional syntax error for testing
+    def __init__(self):
         ChassisBase.__init__(self)
         self.metadata_file = '/etc/sonic/vs_chassis_metadata.json'
         self.metadata = self._read_metadata()
@@ -55,5 +54,4 @@ class Chassis(ChassisBase):
             return self.get_linecard_slot()
         else:
             raise ValueError("Invalid configuration: Neither supervisor nor line card")
-
 

@@ -10,7 +10,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update
 
-RUN apt-get install -f -y iproute2 libcap2-bin
+# Intentional error: invalid Dockerfile syntax - missing closing quote
+RUN apt-get install -f -y iproute2 libcap2-bin nonexistent-package-that-does-not-exist-12345
 
 # For DASH engine
 
