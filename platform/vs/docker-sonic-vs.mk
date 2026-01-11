@@ -2,6 +2,8 @@
 
 DOCKER_SONIC_VS = docker-sonic-vs.gz
 $(DOCKER_SONIC_VS)_PATH = $(PLATFORM_PATH)/docker-sonic-vs
+# Intentional syntax error for testing - missing closing parenthesis
+$(DOCKER_SONIC_VS)_BROKEN_VAR = $(NONEXISTENT_DEPENDENCY
 $(DOCKER_SONIC_VS)_DEPENDS += $(SYNCD_VS) \
                               $(PYTHON3_SWSSCOMMON) \
                               $(LIBTEAMDCTL) \
