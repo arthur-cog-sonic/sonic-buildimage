@@ -115,16 +115,77 @@ steps:
       fi
     fi
     
-    # Also check for common build output locations
-    for extra_log in "/tmp/build.log" "$BUILD_SOURCESDIRECTORY/target/*.log"; do
+    # Check for the main build output log first (captures early-stage errors)
+    # This is the most important log as it captures everything including makefile parsing errors
+    BUILD_OUTPUT_LOG="$LOG_DIR/build-output.log"
+    if [ -f "$BUILD_OUTPUT_LOG" ]; then
+      LOG_COUNT=$((LOG_COUNT + 1))
+      log_name="build-output.log"
+      log_size=$(wc -l < "$BUILD_OUTPUT_LOG" 2>/dev/null || echo "0")
+      
+      # Extract errors from build output
+      ERRORS=$(extract_errors "$BUILD_OUTPUT_LOG" "$MAX_ERROR_LINES")
+      ERROR_COUNT=$(echo "$ERRORS" | grep -c . || echo "0")
+      TOTAL_ERRORS=$((TOTAL_ERRORS + ERROR_COUNT))
+      
+      # This log is shown expanded by default (no <details> wrapper) since it's the primary log
+      echo "### :page_facing_up: Build Output Log" >> "$COMMENT_FILE"
+      echo "" >> "$COMMENT_FILE"
+      
+      if [ "$ERROR_COUNT" -gt 0 ]; then
+        echo "**:warning: $ERROR_COUNT error(s) detected:**" >> "$COMMENT_FILE"
+        echo '```' >> "$COMMENT_FILE"
+        echo "$ERRORS" >> "$COMMENT_FILE"
+        echo '```' >> "$COMMENT_FILE"
+        echo "" >> "$COMMENT_FILE"
+      fi
+      
+      echo "<details>" >> "$COMMENT_FILE"
+      echo "<summary>Full log output (last $MAX_LINES of $log_size lines)</summary>" >> "$COMMENT_FILE"
+      echo "" >> "$COMMENT_FILE"
+      echo '```' >> "$COMMENT_FILE"
+      if [ "$log_size" -gt "$MAX_LINES" ]; then
+        tail -n "$MAX_LINES" "$BUILD_OUTPUT_LOG" >> "$COMMENT_FILE"
+      else
+        cat "$BUILD_OUTPUT_LOG" >> "$COMMENT_FILE"
+      fi
+      echo '```' >> "$COMMENT_FILE"
+      echo "</details>" >> "$COMMENT_FILE"
+      echo "" >> "$COMMENT_FILE"
+    fi
+    
+    # Also check for other common build output locations as fallback
+    for extra_log in "/tmp/build-output.log" "/tmp/build.log" "$BUILD_SOURCESDIRECTORY/target/*.log"; do
+      # Skip if we already processed this file
+      if [ "$extra_log" = "$BUILD_OUTPUT_LOG" ]; then
+        continue
+      fi
       if [ -f "$extra_log" ] 2>/dev/null; then
         LOG_COUNT=$((LOG_COUNT + 1))
         log_name=$(basename "$extra_log")
         log_size=$(wc -l < "$extra_log" 2>/dev/null || echo "0")
         
+        # Extract errors
+        ERRORS=$(extract_errors "$extra_log" "$MAX_ERROR_LINES")
+        ERROR_COUNT=$(echo "$ERRORS" | grep -c . || echo "0")
+        TOTAL_ERRORS=$((TOTAL_ERRORS + ERROR_COUNT))
+        
         echo "<details>" >> "$COMMENT_FILE"
-        echo "<summary><b>$log_name</b> ($log_size lines)</summary>" >> "$COMMENT_FILE"
+        if [ "$ERROR_COUNT" -gt 0 ]; then
+          echo "<summary>:warning: <b>$log_name</b> ($ERROR_COUNT errors, $log_size lines)</summary>" >> "$COMMENT_FILE"
+        else
+          echo "<summary><b>$log_name</b> ($log_size lines)</summary>" >> "$COMMENT_FILE"
+        fi
         echo "" >> "$COMMENT_FILE"
+        
+        if [ "$ERROR_COUNT" -gt 0 ]; then
+          echo "**Errors found:**" >> "$COMMENT_FILE"
+          echo '```' >> "$COMMENT_FILE"
+          echo "$ERRORS" >> "$COMMENT_FILE"
+          echo '```' >> "$COMMENT_FILE"
+          echo "" >> "$COMMENT_FILE"
+        fi
+        
         echo '```' >> "$COMMENT_FILE"
         if [ "$log_size" -gt "$MAX_LINES" ]; then
           echo "... (showing last $MAX_LINES of $log_size lines) ..." >> "$COMMENT_FILE"
