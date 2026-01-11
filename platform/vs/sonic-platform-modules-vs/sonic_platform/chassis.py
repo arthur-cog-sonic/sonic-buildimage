@@ -56,3 +56,4 @@ class Chassis(ChassisBase):
         else:
             raise ValueError("Invalid configuration: Neither supervisor nor line card")
 
+
