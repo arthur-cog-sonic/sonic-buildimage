@@ -1,5 +1,4 @@
 #include <iostream>
-#include <cstdint>
 #include "timestamp_formatter.h"
 #include "logger.h"
 #include "events.h"
@@ -38,8 +37,9 @@ string TimestampFormatter::getYear(string timestamp) {
         }
     }
     // no last timestamp or year change
-    // Use 64-bit safe time operations to avoid Y2038 overflow
-    int64_t currentTime = static_cast<int64_t>(time(nullptr));
+    // Use thread-safe localtime_r instead of localtime
+    // On 64-bit systems, time_t is already 64-bit and Y2038-safe
+    time_t currentTime = time(nullptr);
     struct tm tm_result;
     localtime_r(&currentTime, &tm_result);
     stringstream ss;
