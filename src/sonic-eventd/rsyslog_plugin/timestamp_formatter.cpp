@@ -1,4 +1,5 @@
 #include <iostream>
+#include <cstdint>
 #include "timestamp_formatter.h"
 #include "logger.h"
 #include "events.h"
@@ -37,10 +38,12 @@ string TimestampFormatter::getYear(string timestamp) {
         }
     }
     // no last timestamp or year change
-    time_t currentTime = time(nullptr);
-    tm* const localTime = localtime(&currentTime);
+    // Use 64-bit safe time operations to avoid Y2038 overflow
+    int64_t currentTime = static_cast<int64_t>(time(nullptr));
+    struct tm tm_result;
+    localtime_r(&currentTime, &tm_result);
     stringstream ss;
-    auto currentYear = 1900 + localTime->tm_year;
+    auto currentYear = 1900 + tm_result.tm_year;
     ss << currentYear; // get current year
     string year = ss.str();
     m_storedTimestamp = timestamp;
