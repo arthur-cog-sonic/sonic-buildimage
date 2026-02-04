@@ -132,13 +132,13 @@ typedef struct authmgrClientInfo_s
    BOOL       suppRestarting;
 
    USER_MGR_AUTH_METHOD_t authMethod; /* Auth method for the user of this port */
-  uint32                 sessionTime;  
+  uint64                 sessionTime;  /* Y2038-safe: changed from uint32 */
   
   uint32    clientTimeout;
   
   uint32   sessionTimeout;
   uint32   terminationAction;
-  uint32   lastAuthTime;
+  uint64   lastAuthTime;  /* Y2038-safe: changed from uint32 */
 
    AUTHMGR_PORT_MAB_AUTH_TYPE_t mabAuthType; /* Authentication type used by MAB. To be filled in only if isMABClient is  TRUE */
 

@@ -258,7 +258,7 @@ typedef struct authmgrPortSessionStats_s
   uint32        sessionPacketsGbRx;
   uint32        sessionPacketsTx;
   uint32        sessionPacketsGbTx;
-  uint32        sessionTime;
+  uint64        sessionTime;  /* Y2038-safe: changed from uint32 */
    uchar8        userName[AUTHMGR_USER_NAME_LEN];
    char8         sessionId[AUTHMGR_SESSION_ID_LEN];
 } authmgrPortSessionStats_t;
