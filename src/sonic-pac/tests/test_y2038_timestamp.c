@@ -35,6 +35,33 @@ static int tests_failed = 0;
         } \
     } while(0)
 
+/* ============================================================
+ * Y2038 Detection Signature Functions
+ * These functions can be used to detect Y2038 overflow conditions
+ * ============================================================ */
+
+/* Y2038 overflow point: January 19, 2038 03:14:07 UTC */
+#define Y2038_OVERFLOW_POINT 2147483647ULL  /* 2^31 - 1 */
+#define ONE_YEAR_SECONDS 31536000ULL
+
+/* Returns true if timestamp is within 1 year of Y2038 overflow */
+static inline int y2038_overflow_imminent(uint64 timestamp) {
+    return (timestamp > Y2038_OVERFLOW_POINT - ONE_YEAR_SECONDS) && 
+           (timestamp <= Y2038_OVERFLOW_POINT);
+}
+
+/* Returns true if timestamp has already passed the Y2038 overflow point */
+static inline int y2038_overflow_occurred(uint64 timestamp) {
+    return timestamp > Y2038_OVERFLOW_POINT;
+}
+
+/* Compile-time check that timestamp type is at least 64-bit */
+#define Y2038_TIMESTAMP_CHECK(type) \
+    do { \
+        char _y2038_check[(sizeof(type) >= 8) ? 1 : -1]; \
+        (void)_y2038_check; \
+    } while(0)
+
 /* Test that uint64 type is correctly sized */
 void test_uint64_type_size(void)
 {
@@ -206,6 +233,101 @@ void test_struct_operations_y2038(void)
                 "Session duration from struct fields calculated correctly");
 }
 
+/* ============================================================
+ * Y2038 Detection Signature Tests
+ * ============================================================ */
+
+/* Test y2038_overflow_imminent detection */
+void test_y2038_overflow_imminent(void)
+{
+    /* Timestamp well before Y2038 (year 2020) */
+    uint64 timestamp_2020 = 1577836800ULL;  /* Jan 1, 2020 */
+    TEST_ASSERT(!y2038_overflow_imminent(timestamp_2020),
+                "y2038_overflow_imminent returns false for year 2020");
+
+    /* Timestamp within 1 year of Y2038 overflow */
+    uint64 timestamp_danger = Y2038_OVERFLOW_POINT - 100;  /* 100 seconds before overflow */
+    TEST_ASSERT(y2038_overflow_imminent(timestamp_danger),
+                "y2038_overflow_imminent returns true in danger zone");
+
+    /* Timestamp exactly at Y2038 overflow point */
+    TEST_ASSERT(y2038_overflow_imminent(Y2038_OVERFLOW_POINT),
+                "y2038_overflow_imminent returns true at overflow point");
+
+    /* Timestamp just after Y2038 overflow (no longer imminent, already occurred) */
+    TEST_ASSERT(!y2038_overflow_imminent(Y2038_OVERFLOW_POINT + 1),
+                "y2038_overflow_imminent returns false after overflow");
+}
+
+/* Test y2038_overflow_occurred detection */
+void test_y2038_overflow_occurred(void)
+{
+    /* Timestamp before Y2038 overflow */
+    uint64 timestamp_2020 = 1577836800ULL;  /* Jan 1, 2020 */
+    TEST_ASSERT(!y2038_overflow_occurred(timestamp_2020),
+                "y2038_overflow_occurred returns false for year 2020");
+
+    /* Timestamp exactly at Y2038 overflow point */
+    TEST_ASSERT(!y2038_overflow_occurred(Y2038_OVERFLOW_POINT),
+                "y2038_overflow_occurred returns false at overflow point");
+
+    /* Timestamp just after Y2038 overflow */
+    TEST_ASSERT(y2038_overflow_occurred(Y2038_OVERFLOW_POINT + 1),
+                "y2038_overflow_occurred returns true just after overflow");
+
+    /* Timestamp well after Y2038 (year 2100) */
+    uint64 timestamp_2100 = 4102444800ULL;
+    TEST_ASSERT(y2038_overflow_occurred(timestamp_2100),
+                "y2038_overflow_occurred returns true for year 2100");
+
+    /* Timestamp far in the future */
+    uint64 timestamp_far_future = 10000000000ULL;
+    TEST_ASSERT(y2038_overflow_occurred(timestamp_far_future),
+                "y2038_overflow_occurred returns true for far future");
+}
+
+/* Test compile-time check macro */
+void test_y2038_compile_time_check(void)
+{
+    /* Verify that uint64 passes the compile-time check */
+    Y2038_TIMESTAMP_CHECK(uint64);
+    TEST_ASSERT(1, "Y2038_TIMESTAMP_CHECK passes for uint64");
+
+    /* Verify uint64_t passes the check */
+    Y2038_TIMESTAMP_CHECK(uint64_t);
+    TEST_ASSERT(1, "Y2038_TIMESTAMP_CHECK passes for uint64_t");
+}
+
+/* Test detection signatures with PAC-specific types */
+void test_y2038_detection_with_pac_types(void)
+{
+    test_authmgrClientInfo_t client;
+
+    /* Set timestamp before Y2038 */
+    client.sessionTime = 1577836800ULL;  /* Jan 1, 2020 */
+    client.lastAuthTime = 1577836800ULL;
+    TEST_ASSERT(!y2038_overflow_imminent(client.sessionTime),
+                "Detection works with sessionTime (before Y2038)");
+    TEST_ASSERT(!y2038_overflow_occurred(client.lastAuthTime),
+                "Detection works with lastAuthTime (not occurred)");
+
+    /* Set timestamp in danger zone */
+    client.sessionTime = Y2038_OVERFLOW_POINT - 1000;
+    client.lastAuthTime = Y2038_OVERFLOW_POINT - 500;
+    TEST_ASSERT(y2038_overflow_imminent(client.sessionTime),
+                "Detection works with sessionTime (in danger zone)");
+    TEST_ASSERT(!y2038_overflow_occurred(client.lastAuthTime),
+                "Detection works with lastAuthTime (not yet occurred)");
+
+    /* Set timestamp after Y2038 */
+    client.sessionTime = Y2038_OVERFLOW_POINT + 1000;
+    client.lastAuthTime = Y2038_OVERFLOW_POINT + 2000;
+    TEST_ASSERT(!y2038_overflow_imminent(client.sessionTime),
+                "Detection works with sessionTime (after Y2038, not imminent)");
+    TEST_ASSERT(y2038_overflow_occurred(client.lastAuthTime),
+                "Detection works with lastAuthTime (overflow occurred)");
+}
+
 int main(void)
 {
     printf("=== Y2038 Timestamp Overflow Unit Tests for sonic-pac ===\n\n");
@@ -219,6 +341,13 @@ int main(void)
     test_auth_timeout_calculation();
     test_struct_field_sizes();
     test_struct_operations_y2038();
+
+    printf("\n=== Y2038 Detection Signature Tests ===\n\n");
+
+    test_y2038_overflow_imminent();
+    test_y2038_overflow_occurred();
+    test_y2038_compile_time_check();
+    test_y2038_detection_with_pac_types();
 
     printf("\n=== Test Summary ===\n");
     printf("Passed: %d\n", tests_passed);
