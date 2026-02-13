@@ -204,6 +204,32 @@ stages:
       displayName: "Debug artifact paths"
 
     - script: |
+        set -x
+        LOG="$(Build.ArtifactStagingDirectory)/logs/clean-testbed.log"
+        exec > >(tee -a "$LOG") 2>&1
+        echo "=== Stopping existing cEOS containers for group vms6-1 ==="
+        for c in $(docker ps -a --format '{{.Names}}' | grep 'ceos_vms6-1'); do
+          echo "Stopping and removing container: $c"
+          docker stop "$c" 2>/dev/null || true
+          docker rm -f "$c" 2>/dev/null || true
+        done
+        echo "=== Cleaning cEOS data directories ==="
+        sudo rm -rf /data/ceos/ceos_vms6-1_* 2>/dev/null || true
+        echo "=== Stopping existing PTF container ==="
+        docker stop ptf_vms6-1 2>/dev/null || true
+        docker rm -f ptf_vms6-1 2>/dev/null || true
+        echo "=== Removing stale vlab VMs ==="
+        if virsh -c qemu:///system list --all 2>/dev/null | grep -q vlab; then
+          for vm in $(virsh -c qemu:///system list --all --name 2>/dev/null | grep vlab); do
+            virsh -c qemu:///system destroy "$vm" 2>/dev/null || true
+            virsh -c qemu:///system undefine "$vm" 2>/dev/null || true
+          done
+        fi
+        echo "=== Cleanup complete ==="
+      displayName: "Clean existing testbed topology"
+      continueOnError: true
+
+    - script: |
         set -ex
         LOG="$(Build.ArtifactStagingDirectory)/logs/setup-testbed.log"
         exec > >(tee -a "$LOG") 2>&1
