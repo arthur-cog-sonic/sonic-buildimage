@@ -130,6 +130,66 @@ stages:
         sudo rm -rf $(Pipeline.Workspace)/target 2>/dev/null || true
       displayName: "Cleanup"
 
+    - script: |
+        set -ex
+        LOG="$(Build.ArtifactStagingDirectory)/logs/sonic-mgmt-container-setup.log"
+        exec > >(tee -a "$LOG") 2>&1
+
+        if docker exec sonic-mgmt echo "sonic-mgmt container is running" 2>/dev/null; then
+          echo "sonic-mgmt container already running, nothing to do"
+          exit 0
+        fi
+
+        if docker ps -a --format '{{.Names}}' | grep -q '^sonic-mgmt$'; then
+          echo "sonic-mgmt container exists but stopped, starting it..."
+          docker start sonic-mgmt
+          sleep 5
+          if docker exec sonic-mgmt echo "OK" 2>/dev/null; then
+            echo "sonic-mgmt container started successfully"
+            exit 0
+          fi
+          echo "Failed to start existing container, removing and recreating..."
+          docker rm -f sonic-mgmt
+        fi
+
+        echo "Creating sonic-mgmt container using setup-container.sh..."
+        if ! which j2 &>/dev/null; then
+          echo "Installing j2cli (required by setup-container.sh)..."
+          pip3 install j2cli 2>/dev/null || sudo pip3 install j2cli 2>/dev/null || pip install j2cli 2>/dev/null || true
+        fi
+
+        if which j2 &>/dev/null; then
+          echo "Running setup-container.sh..."
+          /data/sonic-mgmt/setup-container.sh -n sonic-mgmt -d /data -v 2>&1 || {
+            echo "setup-container.sh failed, trying manual container creation..."
+          }
+        fi
+
+        if ! docker exec sonic-mgmt echo "OK" 2>/dev/null; then
+          echo "Trying to pull and create container manually..."
+          docker pull sonicdev-microsoft.azurecr.io:443/docker-sonic-mgmt:latest 2>&1 || true
+          if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q 'docker-sonic-mgmt'; then
+            IMG=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep 'docker-sonic-mgmt' | head -1)
+            echo "Creating container from image: $IMG"
+            docker run -d --name sonic-mgmt \
+              --privileged \
+              -v /data:/data:rslave \
+              -v /var/run/docker.sock:/var/run/docker.sock:rslave \
+              "$IMG" /bin/bash -c "while true; do sleep 3600; done"
+            sleep 5
+          fi
+        fi
+
+        if docker exec sonic-mgmt echo "OK" 2>/dev/null; then
+          echo "sonic-mgmt container is ready"
+        else
+          echo "ERROR: Failed to create sonic-mgmt container"
+          echo "Available docker images:"
+          docker images 2>/dev/null || true
+          exit 1
+        fi
+      displayName: "Ensure sonic-mgmt container exists"
+
     - task: DownloadPipelineArtifact@2
       inputs:
         artifact: sonic-buildimage.vs
@@ -170,12 +230,6 @@ stages:
 
         if [ ! -d /data/sonic-mgmt ]; then
           echo "ERROR: /data/sonic-mgmt does not exist. Please set up sonic-mgmt on the build agent."
-          exit 1
-        fi
-
-        if ! docker exec sonic-mgmt echo "OK" 2>/dev/null; then
-          echo "ERROR: sonic-mgmt Docker container is not running. Please start it on the build agent."
-          echo "Hint: docker run -d --name sonic-mgmt -v /data:/data -v /var/run/libvirt:/var/run/libvirt --privileged docker-sonic-mgmt"
           exit 1
         fi
 
