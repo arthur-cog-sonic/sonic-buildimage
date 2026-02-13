@@ -68,6 +68,98 @@ stages:
       jobGroups:
       - name: vs
 
+- stage: Test
+  dependsOn: BuildVS
+  condition: and(succeeded(), in(dependencies.BuildVS.result, 'Succeeded', 'SucceededWithIssues'))
+  variables:
+  - name: inventory
+    value: veos_vtb
+  - name: testbed_file
+    value: vtestbed.yaml
+
+  jobs:
+  - job: kvmtest_t0
+    pool: sonic-build
+    displayName: "kvmtest-t0"
+    timeoutInMinutes: 360
+    steps:
+    - template: .azure-pipelines/cleanup.yml@buildimage
+    - checkout: self
+      clean: true
+      displayName: 'Checkout code'
+
+    - script: |
+        sudo rm -rf ../target
+      displayName: "Cleanup"
+
+    - task: DownloadPipelineArtifact@2
+      inputs:
+        artifact: sonic-buildimage.vs
+      displayName: "Download sonic-buildimage.vs artifact"
+
+    - script: |
+        set -ex
+        sudo mkdir -p /data/sonic-vm/images
+        sudo cp -v ../target/target/sonic-vs.img.gz /data/sonic-vm/images/sonic-vs.img.gz
+        sudo gzip -fd /data/sonic-vm/images/sonic-vs.img.gz
+        username=$(id -un)
+        sudo chown -R $username.$username /data/sonic-vm
+
+        pushd /data/sonic-mgmt
+        git remote update
+        git reset --hard origin/master
+        sed -i s/use_own_value/${username}/ ansible/veos_vtb
+        echo aaa > ansible/password.txt
+        docker exec sonic-mgmt bash -c "pushd /data/sonic-mgmt/ansible;./testbed-cli.sh -d /data/sonic-vm -m $(inventory) -t $(testbed_file) -k ceos refresh-dut vms-kvm-t0 password.txt" && sleep 180
+      displayName: "Setup testbed"
+
+    - script: |
+        rm -rf $(Build.ArtifactStagingDirectory)/*
+        docker exec sonic-mgmt bash -c "/data/sonic-mgmt/tests/kvmtest.sh -en -T t0 vms-kvm-t0 vlab-01"
+      displayName: "Run tests"
+
+    - script: |
+        virsh_version=$(virsh --version) || true
+        if [ "$virsh_version" == "6.0.0" ]; then
+            mkdir -p $(Build.ArtifactStagingDirectory)/kvmdump
+            virsh -c qemu:///system list
+            virsh -c qemu:///system save vlab-01 $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.memdmp
+            virsh -c qemu:///system dumpxml vlab-01 > $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.xml
+            img=$(virsh -c qemu:///system domblklist vlab-01 | grep vda | awk '{print $2}')
+            cp $img $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.img
+            gzip $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.img
+            sudo gzip $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.memdmp
+            virsh -c qemu:///system undefine vlab-01
+        fi
+        docker commit ptf_vms-kvm-t0 docker-ptf:$(Build.BuildNumber) || true
+        docker save docker-ptf:$(Build.BuildNumber) | gzip -c > $(Build.ArtifactStagingDirectory)/kvmdump/docker-ptf-dump.gz || true
+        docker rmi docker-ptf:$(Build.BuildNumber) || true
+      displayName: "Collect kvmdump"
+      condition: failed()
+
+    - script: |
+        cp -r /data/sonic-mgmt/tests/logs $(Build.ArtifactStagingDirectory)/ 2>/dev/null || true
+        username=$(id -un)
+        sudo chown -R $username.$username $(Build.ArtifactStagingDirectory)
+      displayName: "Collect test logs"
+      condition: succeededOrFailed()
+
+    - publish: $(Build.ArtifactStagingDirectory)/kvmdump
+      artifact: sonic-buildimage.kvmtest.t0.memdump@$(System.JobAttempt)
+      displayName: "Archive sonic kvm memdump"
+      condition: failed()
+
+    - publish: $(Build.ArtifactStagingDirectory)/logs
+      artifact: sonic-buildimage.kvmtest.t0.log@$(System.JobAttempt)
+      displayName: "Archive sonic kvm logs"
+      condition: succeededOrFailed()
+
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFiles: '$(Build.ArtifactStagingDirectory)/logs/**/*.xml'
+        testRunTitle: kvmtest.t0
+      condition: succeededOrFailed()
+
 # Platform builds commented out - no DUTs available for testing
 # - stage: Build
 #   pool: sonic-build
