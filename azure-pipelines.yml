@@ -238,6 +238,25 @@ stages:
         git reset --hard origin/master
         sed -i s/use_own_value/${username}/ ansible/veos_vtb
         echo aaa > ansible/password.txt
+
+        CEOS_TAG=$(docker images ceosimage --format '{{.Tag}}' | grep -v '<none>' | sort -V | tail -1)
+        if [ -n "$CEOS_TAG" ]; then
+          echo "Found existing cEOS image: ceosimage:$CEOS_TAG"
+          CEOS_ORIG="ceosimage:$CEOS_TAG"
+          CEOS_IMG="ceosimage:${CEOS_TAG}-1"
+          if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "ceosimage:${CEOS_TAG}-1"; then
+            CEOS_IMG="ceosimage:${CEOS_TAG}-1"
+          else
+            CEOS_IMG="$CEOS_ORIG"
+          fi
+          printf "ceos_image_filename: cEOS64-lab-%s.tar\nceos_image_orig: %s\nceos_image: %s\nceos_image_url: []\nskip_ceos_image_downloading: true\n" \
+            "$CEOS_TAG" "$CEOS_ORIG" "$CEOS_IMG" > ansible/group_vars/vm_host/ceos.yml
+          echo "Updated ceos.yml to match existing image:"
+          cat ansible/group_vars/vm_host/ceos.yml
+        else
+          echo "WARNING: No cEOS image found, using defaults from repo"
+        fi
+
         echo "Running testbed-cli.sh refresh-dut..."
         docker exec sonic-mgmt bash -c "pushd /data/sonic-mgmt/ansible;./testbed-cli.sh -d /data/sonic-vm -m $(inventory) -t $(testbed_file) -k ceos refresh-dut vms-kvm-t0 password.txt" && sleep 180
       displayName: "Setup testbed"
