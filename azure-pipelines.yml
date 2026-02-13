@@ -195,21 +195,49 @@ stages:
       displayName: "Collect test logs"
       condition: succeededOrFailed()
 
+    - script: |
+        if [ -d "$(Build.ArtifactStagingDirectory)/kvmdump" ] && [ "$(ls -A $(Build.ArtifactStagingDirectory)/kvmdump 2>/dev/null)" ]; then
+          echo "##vso[task.setvariable variable=HAS_KVMDUMP]true"
+        else
+          echo "No kvmdump files to publish"
+          echo "##vso[task.setvariable variable=HAS_KVMDUMP]false"
+        fi
+        if [ -d "$(Build.ArtifactStagingDirectory)/logs" ] && [ "$(ls -A $(Build.ArtifactStagingDirectory)/logs 2>/dev/null)" ]; then
+          echo "##vso[task.setvariable variable=HAS_LOGS]true"
+        else
+          echo "No log files to publish"
+          echo "##vso[task.setvariable variable=HAS_LOGS]false"
+        fi
+        XML_COUNT=$(find $(Build.ArtifactStagingDirectory)/logs -name '*.xml' 2>/dev/null | wc -l)
+        if [ "$XML_COUNT" -gt 0 ]; then
+          echo "##vso[task.setvariable variable=HAS_XML]true"
+        else
+          echo "No XML test result files found"
+          echo "##vso[task.setvariable variable=HAS_XML]false"
+        fi
+      displayName: "Check publishable artifacts"
+      condition: succeededOrFailed()
+
     - publish: $(Build.ArtifactStagingDirectory)/kvmdump
       artifact: sonic-buildimage.kvmtest.t0.memdump@$(System.JobAttempt)
       displayName: "Archive sonic kvm memdump"
-      condition: failed()
+      condition: and(failed(), eq(variables.HAS_KVMDUMP, 'true'))
 
     - publish: $(Build.ArtifactStagingDirectory)/logs
       artifact: sonic-buildimage.kvmtest.t0.log@$(System.JobAttempt)
       displayName: "Archive sonic kvm logs"
-      condition: succeededOrFailed()
+      condition: and(succeededOrFailed(), eq(variables.HAS_LOGS, 'true'))
 
     - task: PublishTestResults@2
       inputs:
         testResultsFiles: '$(Build.ArtifactStagingDirectory)/logs/**/*.xml'
         testRunTitle: kvmtest.t0
-      condition: succeededOrFailed()
+      condition: and(succeededOrFailed(), eq(variables.HAS_XML, 'true'))
+
+    - template: .azure-pipelines/post-failure-to-github.yml
+      parameters:
+        jobName: 'kvmtest-t0'
+        logDirectory: '$(Build.ArtifactStagingDirectory)/logs'
 
 # Platform builds commented out - no DUTs available for testing
 # - stage: Build
