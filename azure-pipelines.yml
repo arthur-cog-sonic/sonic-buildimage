@@ -88,21 +88,40 @@ stages:
       displayName: 'Checkout code'
 
     - script: |
+        mkdir -p $(Build.ArtifactStagingDirectory)/logs
+      displayName: "Create logs directory"
+
+    - script: |
         set -x
+        LOG="$(Build.ArtifactStagingDirectory)/logs/diagnostics.log"
+        exec > >(tee -a "$LOG") 2>&1
         echo "=== Environment diagnostics ==="
         echo "Pipeline.Workspace: $(Pipeline.Workspace)"
         echo "Build.ArtifactStagingDirectory: $(Build.ArtifactStagingDirectory)"
         echo "System.DefaultWorkingDirectory: $(System.DefaultWorkingDirectory)"
+        echo "Agent.BuildDirectory: $(Agent.BuildDirectory)"
         echo "PWD: $(pwd)"
-        echo "=== Check prerequisites ==="
-        echo "KVM support:"
-        ls -la /dev/kvm 2>/dev/null || echo "WARNING: /dev/kvm not found"
-        echo "libvirt:"
-        virsh --version 2>/dev/null || echo "WARNING: virsh not found"
-        echo "sonic-mgmt directory:"
-        ls -la /data/sonic-mgmt 2>/dev/null || echo "WARNING: /data/sonic-mgmt not found"
-        echo "sonic-mgmt docker:"
-        docker ps --filter name=sonic-mgmt 2>/dev/null || echo "WARNING: docker not available"
+        echo "whoami: $(whoami)"
+        echo "=== Check KVM ==="
+        ls -la /dev/kvm 2>/dev/null || echo "FAIL: /dev/kvm not found"
+        echo "=== Check libvirt ==="
+        virsh --version 2>/dev/null || echo "FAIL: virsh not found"
+        virsh -c qemu:///system list 2>/dev/null || echo "FAIL: cannot connect to libvirt"
+        echo "=== Check sonic-mgmt directory ==="
+        ls -la /data/sonic-mgmt 2>/dev/null || echo "FAIL: /data/sonic-mgmt not found"
+        ls /data/sonic-mgmt/tests/kvmtest.sh 2>/dev/null || echo "FAIL: kvmtest.sh not found"
+        echo "=== Check sonic-mgmt docker container ==="
+        docker ps -a --filter name=sonic-mgmt 2>/dev/null || echo "FAIL: docker not available"
+        docker exec sonic-mgmt echo "sonic-mgmt container is running" 2>/dev/null || echo "FAIL: sonic-mgmt container not running or not accessible"
+        echo "=== Check /data contents ==="
+        ls -la /data/ 2>/dev/null || echo "FAIL: /data does not exist"
+        echo "=== Check cEOS images ==="
+        ls -la /data/sonic-vm/images/ 2>/dev/null || echo "INFO: /data/sonic-vm/images/ not found yet"
+        ls -la /data/ceos/ 2>/dev/null || echo "INFO: /data/ceos/ not found"
+        echo "=== Docker images ==="
+        docker images 2>/dev/null | head -20 || true
+        echo "=== Docker containers ==="
+        docker ps -a 2>/dev/null || true
         echo "=== Diagnostics complete ==="
       displayName: "Check prerequisites"
       continueOnError: true
@@ -126,6 +145,9 @@ stages:
 
     - script: |
         set -ex
+        LOG="$(Build.ArtifactStagingDirectory)/logs/setup-testbed.log"
+        exec > >(tee -a "$LOG") 2>&1
+
         VS_IMAGE=""
         if [ -f "$(Pipeline.Workspace)/target/sonic-vs.img.gz" ]; then
           VS_IMAGE="$(Pipeline.Workspace)/target/sonic-vs.img.gz"
@@ -151,17 +173,25 @@ stages:
           exit 1
         fi
 
+        if ! docker exec sonic-mgmt echo "OK" 2>/dev/null; then
+          echo "ERROR: sonic-mgmt Docker container is not running. Please start it on the build agent."
+          echo "Hint: docker run -d --name sonic-mgmt -v /data:/data -v /var/run/libvirt:/var/run/libvirt --privileged docker-sonic-mgmt"
+          exit 1
+        fi
+
         pushd /data/sonic-mgmt
         git remote update
         git reset --hard origin/master
         sed -i s/use_own_value/${username}/ ansible/veos_vtb
         echo aaa > ansible/password.txt
+        echo "Running testbed-cli.sh refresh-dut..."
         docker exec sonic-mgmt bash -c "pushd /data/sonic-mgmt/ansible;./testbed-cli.sh -d /data/sonic-vm -m $(inventory) -t $(testbed_file) -k ceos refresh-dut vms-kvm-t0 password.txt" && sleep 180
       displayName: "Setup testbed"
 
     - script: |
-        rm -rf $(Build.ArtifactStagingDirectory)/*
-        docker exec sonic-mgmt bash -c "/data/sonic-mgmt/tests/kvmtest.sh -en -T t0 vms-kvm-t0 vlab-01"
+        LOG="$(Build.ArtifactStagingDirectory)/logs/kvmtest-run.log"
+        docker exec sonic-mgmt bash -c "/data/sonic-mgmt/tests/kvmtest.sh -en -T t0 vms-kvm-t0 vlab-01" 2>&1 | tee -a "$LOG"
+        exit ${PIPESTATUS[0]}
       displayName: "Run tests"
 
     - script: |
