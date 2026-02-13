@@ -1,6 +1,6 @@
 # Template to post build failure logs to GitHub PR comments
-# This template should be included in build pipelines and runs on failure
-# It formats logs neatly using collapsible sections to avoid overwhelming comments
+# Posts ALL log file contents so Devin and reviewers can see the full picture.
+# Includes environment snapshot even when no logs exist.
 
 parameters:
 - name: jobName
@@ -11,7 +11,7 @@ parameters:
   default: 'target'
 - name: maxLogLines
   type: number
-  default: 200
+  default: 300
 - name: maxErrorLines
   type: number
   default: 50
@@ -56,12 +56,10 @@ steps:
       echo ""
     } > "$COMMENT_FILE"
     
-    # Function to extract and format error lines from a log
     extract_errors() {
       local file="$1"
       local max_lines="$2"
-      # Look for common error patterns and extract context
-      grep -n -i -E "(error|failed|fatal|exception|cannot|undefined|not found)" "$file" 2>/dev/null | head -n "$max_lines" || true
+      grep -n -i -E "(error[^s]|ERROR|FAILED|fatal:|FATAL|exception|cannot |CANNOT |not found|exit 1|returned non-zero|rc=[1-9])" "$file" 2>/dev/null | head -n "$max_lines" || true
     }
     
     # Find and process log files
@@ -69,8 +67,7 @@ steps:
     TOTAL_ERRORS=0
     
     if [ -d "$LOG_DIR" ]; then
-      # Find all .log files, sorted by modification time (newest first)
-      LOG_FILES=$(find "$LOG_DIR" -name "*.log" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -10 | cut -d' ' -f2-)
+      LOG_FILES=$(find "$LOG_DIR" -name "*.log" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -15 | cut -d' ' -f2-)
       
       if [ -n "$LOG_FILES" ]; then
         for log_file in $LOG_FILES; do
@@ -80,14 +77,14 @@ steps:
           
           # Extract errors first
           ERRORS=$(extract_errors "$log_file" "$MAX_ERROR_LINES")
-          ERROR_COUNT=$(echo "$ERRORS" | grep -c . || echo "0")
+          ERROR_COUNT=$(echo "$ERRORS" | grep -c . 2>/dev/null || echo "0")
           TOTAL_ERRORS=$((TOTAL_ERRORS + ERROR_COUNT))
           
           echo "<details>" >> "$COMMENT_FILE"
           if [ "$ERROR_COUNT" -gt 0 ]; then
             echo "<summary>:warning: <b>$log_name</b> ($ERROR_COUNT errors, $log_size lines total)</summary>" >> "$COMMENT_FILE"
           else
-            echo "<summary><b>$log_name</b> ($log_size lines)</summary>" >> "$COMMENT_FILE"
+            echo "<summary>:page_facing_up: <b>$log_name</b> ($log_size lines, no error patterns matched)</summary>" >> "$COMMENT_FILE"
           fi
           echo "" >> "$COMMENT_FILE"
           
@@ -115,69 +112,22 @@ steps:
       fi
     fi
     
-    # Check for the main build output log first (captures early-stage errors)
-    # This is the most important log as it captures everything including makefile parsing errors
-    BUILD_OUTPUT_LOG="$LOG_DIR/build-output.log"
-    if [ -f "$BUILD_OUTPUT_LOG" ]; then
-      LOG_COUNT=$((LOG_COUNT + 1))
-      log_name="build-output.log"
-      log_size=$(wc -l < "$BUILD_OUTPUT_LOG" 2>/dev/null || echo "0")
-      
-      # Extract errors from build output
-      ERRORS=$(extract_errors "$BUILD_OUTPUT_LOG" "$MAX_ERROR_LINES")
-      ERROR_COUNT=$(echo "$ERRORS" | grep -c . || echo "0")
-      TOTAL_ERRORS=$((TOTAL_ERRORS + ERROR_COUNT))
-      
-      # This log is shown expanded by default (no <details> wrapper) since it's the primary log
-      echo "### :page_facing_up: Build Output Log" >> "$COMMENT_FILE"
-      echo "" >> "$COMMENT_FILE"
-      
-      if [ "$ERROR_COUNT" -gt 0 ]; then
-        echo "**:warning: $ERROR_COUNT error(s) detected:**" >> "$COMMENT_FILE"
-        echo '```' >> "$COMMENT_FILE"
-        echo "$ERRORS" >> "$COMMENT_FILE"
-        echo '```' >> "$COMMENT_FILE"
-        echo "" >> "$COMMENT_FILE"
-      fi
-      
-      echo "<details>" >> "$COMMENT_FILE"
-      echo "<summary>Full log output (last $MAX_LINES of $log_size lines)</summary>" >> "$COMMENT_FILE"
-      echo "" >> "$COMMENT_FILE"
-      echo '```' >> "$COMMENT_FILE"
-      if [ "$log_size" -gt "$MAX_LINES" ]; then
-        tail -n "$MAX_LINES" "$BUILD_OUTPUT_LOG" >> "$COMMENT_FILE"
-      else
-        cat "$BUILD_OUTPUT_LOG" >> "$COMMENT_FILE"
-      fi
-      echo '```' >> "$COMMENT_FILE"
-      echo "</details>" >> "$COMMENT_FILE"
-      echo "" >> "$COMMENT_FILE"
-    fi
-    
-    # Also check for other common build output locations as fallback
-    for extra_log in "/tmp/build-output.log" "/tmp/build.log" "$BUILD_SOURCESDIRECTORY/target/*.log"; do
-      # Skip if we already processed this file
-      if [ "$extra_log" = "$BUILD_OUTPUT_LOG" ]; then
-        continue
-      fi
+    # Also check fallback log locations
+    for extra_log in "/tmp/build-output.log" "/tmp/build.log"; do
       if [ -f "$extra_log" ] 2>/dev/null; then
         LOG_COUNT=$((LOG_COUNT + 1))
         log_name=$(basename "$extra_log")
         log_size=$(wc -l < "$extra_log" 2>/dev/null || echo "0")
-        
-        # Extract errors
         ERRORS=$(extract_errors "$extra_log" "$MAX_ERROR_LINES")
-        ERROR_COUNT=$(echo "$ERRORS" | grep -c . || echo "0")
+        ERROR_COUNT=$(echo "$ERRORS" | grep -c . 2>/dev/null || echo "0")
         TOTAL_ERRORS=$((TOTAL_ERRORS + ERROR_COUNT))
-        
         echo "<details>" >> "$COMMENT_FILE"
         if [ "$ERROR_COUNT" -gt 0 ]; then
           echo "<summary>:warning: <b>$log_name</b> ($ERROR_COUNT errors, $log_size lines)</summary>" >> "$COMMENT_FILE"
         else
-          echo "<summary><b>$log_name</b> ($log_size lines)</summary>" >> "$COMMENT_FILE"
+          echo "<summary>:page_facing_up: <b>$log_name</b> ($log_size lines)</summary>" >> "$COMMENT_FILE"
         fi
         echo "" >> "$COMMENT_FILE"
-        
         if [ "$ERROR_COUNT" -gt 0 ]; then
           echo "**Errors found:**" >> "$COMMENT_FILE"
           echo '```' >> "$COMMENT_FILE"
@@ -185,10 +135,8 @@ steps:
           echo '```' >> "$COMMENT_FILE"
           echo "" >> "$COMMENT_FILE"
         fi
-        
         echo '```' >> "$COMMENT_FILE"
         if [ "$log_size" -gt "$MAX_LINES" ]; then
-          echo "... (showing last $MAX_LINES of $log_size lines) ..." >> "$COMMENT_FILE"
           tail -n "$MAX_LINES" "$extra_log" >> "$COMMENT_FILE"
         else
           cat "$extra_log" >> "$COMMENT_FILE"
@@ -199,22 +147,54 @@ steps:
       fi
     done
     
-    # If no log files found, provide helpful message
+    # Always include environment snapshot for debugging
+    {
+      echo "<details>"
+      echo "<summary>:gear: <b>Environment snapshot at failure time</b></summary>"
+      echo ""
+      echo '```'
+      echo "=== Docker containers ==="
+      docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null | head -30 || echo "(docker ps failed)"
+      echo ""
+      echo "=== Log directory listing ==="
+      ls -la "$LOG_DIR"/ 2>/dev/null || echo "(log directory not found: $LOG_DIR)"
+      echo ""
+      echo "=== Disk usage ==="
+      df -h / /data 2>/dev/null || true
+      echo ""
+      echo "=== Recent dmesg (last 10 lines) ==="
+      dmesg 2>/dev/null | tail -10 || echo "(dmesg not available)"
+      echo '```'
+      echo "</details>"
+      echo ""
+    } >> "$COMMENT_FILE"
+    
     if [ "$LOG_COUNT" -eq 0 ]; then
-      echo "<details>" >> "$COMMENT_FILE"
-      echo "<summary>:information_source: No log files found</summary>" >> "$COMMENT_FILE"
-      echo "" >> "$COMMENT_FILE"
-      echo "No \`.log\` files were found in \`$LOG_DIR\`." >> "$COMMENT_FILE"
-      echo "" >> "$COMMENT_FILE"
-      echo "The build may have failed before generating logs, or logs are stored elsewhere." >> "$COMMENT_FILE"
-      echo "</details>" >> "$COMMENT_FILE"
-      echo "" >> "$COMMENT_FILE"
+      {
+        echo ":information_source: **No \`.log\` files found in \`$LOG_DIR\`.** The job may have failed before any step produced logs."
+        echo ""
+        echo "Check the [Azure DevOps build logs]($BUILD_URL) directly for details."
+        echo ""
+      } >> "$COMMENT_FILE"
     fi
     
-    # Add summary line
-    if [ "$TOTAL_ERRORS" -gt 0 ]; then
-      echo "---" >> "$COMMENT_FILE"
-      echo ":mag: **$TOTAL_ERRORS error(s)** found across **$LOG_COUNT log file(s)**" >> "$COMMENT_FILE"
+    # Summary
+    {
+      echo "---"
+      if [ "$TOTAL_ERRORS" -gt 0 ]; then
+        echo ":mag: **$TOTAL_ERRORS error(s)** found across **$LOG_COUNT log file(s)**"
+      else
+        echo ":mag: **$LOG_COUNT log file(s)** processed, **0 error patterns matched** — check full log tails above for the actual failure"
+      fi
+    } >> "$COMMENT_FILE"
+    
+    # Truncate comment if it exceeds GitHub's limit (65535 chars)
+    COMMENT_SIZE=$(wc -c < "$COMMENT_FILE")
+    if [ "$COMMENT_SIZE" -gt 60000 ]; then
+      head -c 60000 "$COMMENT_FILE" > "${COMMENT_FILE}.tmp"
+      echo "" >> "${COMMENT_FILE}.tmp"
+      echo ":scissors: *Comment truncated (${COMMENT_SIZE} chars). See [build logs]($BUILD_URL) for full output.*" >> "${COMMENT_FILE}.tmp"
+      mv "${COMMENT_FILE}.tmp" "$COMMENT_FILE"
     fi
     
     # Read the comment content
