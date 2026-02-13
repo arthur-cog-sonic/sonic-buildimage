@@ -83,13 +83,32 @@ stages:
     displayName: "kvmtest-t0"
     timeoutInMinutes: 360
     steps:
-    - template: .azure-pipelines/cleanup.yml@buildimage
     - checkout: self
       clean: true
       displayName: 'Checkout code'
 
     - script: |
-        sudo rm -rf ../target
+        set -x
+        echo "=== Environment diagnostics ==="
+        echo "Pipeline.Workspace: $(Pipeline.Workspace)"
+        echo "Build.ArtifactStagingDirectory: $(Build.ArtifactStagingDirectory)"
+        echo "System.DefaultWorkingDirectory: $(System.DefaultWorkingDirectory)"
+        echo "PWD: $(pwd)"
+        echo "=== Check prerequisites ==="
+        echo "KVM support:"
+        ls -la /dev/kvm 2>/dev/null || echo "WARNING: /dev/kvm not found"
+        echo "libvirt:"
+        virsh --version 2>/dev/null || echo "WARNING: virsh not found"
+        echo "sonic-mgmt directory:"
+        ls -la /data/sonic-mgmt 2>/dev/null || echo "WARNING: /data/sonic-mgmt not found"
+        echo "sonic-mgmt docker:"
+        docker ps --filter name=sonic-mgmt 2>/dev/null || echo "WARNING: docker not available"
+        echo "=== Diagnostics complete ==="
+      displayName: "Check prerequisites"
+      continueOnError: true
+
+    - script: |
+        sudo rm -rf $(Pipeline.Workspace)/target 2>/dev/null || true
       displayName: "Cleanup"
 
     - task: DownloadPipelineArtifact@2
@@ -98,12 +117,39 @@ stages:
       displayName: "Download sonic-buildimage.vs artifact"
 
     - script: |
+        set -x
+        echo "=== Listing artifact contents ==="
+        ls -la $(Pipeline.Workspace)/target/ 2>/dev/null || true
+        ls -la ../target/ 2>/dev/null || true
+        find $(Pipeline.Workspace) -name 'sonic-vs.img.gz' -type f 2>/dev/null || true
+      displayName: "Debug artifact paths"
+
+    - script: |
         set -ex
+        VS_IMAGE=""
+        if [ -f "$(Pipeline.Workspace)/target/sonic-vs.img.gz" ]; then
+          VS_IMAGE="$(Pipeline.Workspace)/target/sonic-vs.img.gz"
+        elif [ -f "../target/sonic-vs.img.gz" ]; then
+          VS_IMAGE="../target/sonic-vs.img.gz"
+        else
+          VS_IMAGE=$(find $(Pipeline.Workspace) -name 'sonic-vs.img.gz' -type f | head -1)
+        fi
+        if [ -z "$VS_IMAGE" ]; then
+          echo "ERROR: sonic-vs.img.gz not found anywhere"
+          exit 1
+        fi
+        echo "Found VS image at: $VS_IMAGE"
+
         sudo mkdir -p /data/sonic-vm/images
-        sudo cp -v ../target/sonic-vs.img.gz /data/sonic-vm/images/sonic-vs.img.gz
+        sudo cp -v "$VS_IMAGE" /data/sonic-vm/images/sonic-vs.img.gz
         sudo gzip -fd /data/sonic-vm/images/sonic-vs.img.gz
         username=$(id -un)
         sudo chown -R $username.$username /data/sonic-vm
+
+        if [ ! -d /data/sonic-mgmt ]; then
+          echo "ERROR: /data/sonic-mgmt does not exist. Please set up sonic-mgmt on the build agent."
+          exit 1
+        fi
 
         pushd /data/sonic-mgmt
         git remote update
@@ -119,26 +165,31 @@ stages:
       displayName: "Run tests"
 
     - script: |
-        virsh_version=$(virsh --version) || true
-        if [ "$virsh_version" == "6.0.0" ]; then
-            mkdir -p $(Build.ArtifactStagingDirectory)/kvmdump
-            virsh -c qemu:///system list
-            virsh -c qemu:///system save vlab-01 $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.memdmp
-            virsh -c qemu:///system dumpxml vlab-01 > $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.xml
-            img=$(virsh -c qemu:///system domblklist vlab-01 | grep vda | awk '{print $2}')
-            cp $img $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.img
-            gzip $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.img
-            sudo gzip $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.memdmp
-            virsh -c qemu:///system undefine vlab-01
+        mkdir -p $(Build.ArtifactStagingDirectory)/kvmdump || true
+        virsh_version=$(virsh --version 2>/dev/null) || true
+        if [ -n "$virsh_version" ]; then
+            virsh -c qemu:///system list || true
+            virsh -c qemu:///system save vlab-01 $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.memdmp 2>/dev/null || true
+            virsh -c qemu:///system dumpxml vlab-01 > $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.xml 2>/dev/null || true
+            img=$(virsh -c qemu:///system domblklist vlab-01 2>/dev/null | grep vda | awk '{print $2}')
+            if [ -n "$img" ] && [ -f "$img" ]; then
+              cp $img $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.img
+              gzip $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.img
+            fi
+            if [ -f $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.memdmp ]; then
+              sudo gzip $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.memdmp
+            fi
+            virsh -c qemu:///system undefine vlab-01 2>/dev/null || true
         fi
-        docker commit ptf_vms-kvm-t0 docker-ptf:$(Build.BuildNumber) || true
-        docker save docker-ptf:$(Build.BuildNumber) | gzip -c > $(Build.ArtifactStagingDirectory)/kvmdump/docker-ptf-dump.gz || true
-        docker rmi docker-ptf:$(Build.BuildNumber) || true
+        docker commit ptf_vms-kvm-t0 docker-ptf:$(Build.BuildNumber) 2>/dev/null || true
+        docker save docker-ptf:$(Build.BuildNumber) 2>/dev/null | gzip -c > $(Build.ArtifactStagingDirectory)/kvmdump/docker-ptf-dump.gz 2>/dev/null || true
+        docker rmi docker-ptf:$(Build.BuildNumber) 2>/dev/null || true
       displayName: "Collect kvmdump"
       condition: failed()
 
     - script: |
-        cp -r /data/sonic-mgmt/tests/logs $(Build.ArtifactStagingDirectory)/ 2>/dev/null || true
+        mkdir -p $(Build.ArtifactStagingDirectory)/logs || true
+        cp -r /data/sonic-mgmt/tests/logs/* $(Build.ArtifactStagingDirectory)/logs/ 2>/dev/null || true
         username=$(id -un)
         sudo chown -R $username.$username $(Build.ArtifactStagingDirectory)
       displayName: "Collect test logs"
