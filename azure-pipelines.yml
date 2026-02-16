@@ -195,18 +195,50 @@ stages:
         LOG="$(Build.ArtifactStagingDirectory)/logs/update-sonic-mgmt.log"
         exec > >(tee -a "$LOG") 2>&1
 
-        echo "=== Updating /data/sonic-mgmt from arthur-cog-sonic fork ==="
-        cd /data/sonic-mgmt
+        TARGET="/data/sonic-mgmt/tests/generic_config_updater/test_cacl.py"
+        echo "=== Patching test_cacl.py with config restore fix ==="
+        echo "Before patch:"
+        grep -n "def restore_test_env" "$TARGET" || true
+        sed -n '49,53p' "$TARGET" || true
 
-        if ! git remote get-url arthur-fork 2>/dev/null; then
-          git remote add arthur-fork https://github.com/arthur-cog-sonic/sonic-mgmt.git
-        fi
+        python3 -c "
+import re
+with open('$TARGET', 'r') as f:
+    content = f.read()
 
-        git fetch arthur-fork devin/1771222385-fix-cacl-config-restore
-        git checkout arthur-fork/devin/1771222385-fix-cacl-config-restore -- tests/generic_config_updater/test_cacl.py
-        echo "=== Updated test_cacl.py with config restore fix ==="
-        git diff --stat HEAD
-      displayName: "Update sonic-mgmt with test fixes"
+old = '''@pytest.fixture(scope=\"module\", autouse=True)
+def restore_test_env(duthosts, rand_one_dut_front_end_hostname):
+    duthost = duthosts[rand_one_dut_front_end_hostname]
+    config_reload(duthost, config_source=\"minigraph\", safe_reload=True)
+    yield'''
+
+new = '''@pytest.fixture(scope=\"module\", autouse=True)
+def restore_test_env(duthosts, rand_one_dut_front_end_hostname):
+    duthost = duthosts[rand_one_dut_front_end_hostname]
+    duthost.shell(\"cp /etc/sonic/config_db.json /etc/sonic/config_db.json.before_cacl\")
+    config_reload(duthost, config_source=\"minigraph\", safe_reload=True)
+    yield
+    logger.info(\"Restoring original config_db.json after test_cacl module\")
+    duthost.shell(\"cp /etc/sonic/config_db.json.before_cacl /etc/sonic/config_db.json\")
+    config_reload(duthost, safe_reload=True)
+    duthost.shell(\"rm -f /etc/sonic/config_db.json.before_cacl\")'''
+
+if old in content:
+    content = content.replace(old, new)
+    with open('$TARGET', 'w') as f:
+        f.write(content)
+    print('SUCCESS: test_cacl.py patched')
+else:
+    print('WARNING: Pattern not found - file may already be patched or has different content')
+    print('Looking for restore_test_env:')
+    for i, line in enumerate(content.split('\n'), 1):
+        if 'restore_test_env' in line or 'before_cacl' in line:
+            print(f'  Line {i}: {line}')
+"
+
+        echo "After patch:"
+        sed -n '49,62p' "$TARGET" || true
+      displayName: "Patch test_cacl.py with config restore fix"
       continueOnError: true
 
     - task: DownloadPipelineArtifact@2
