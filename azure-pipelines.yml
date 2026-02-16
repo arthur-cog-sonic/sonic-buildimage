@@ -198,43 +198,10 @@ stages:
         TARGET="/data/sonic-mgmt/tests/generic_config_updater/test_cacl.py"
         echo "=== Patching test_cacl.py with config restore fix ==="
         echo "Before patch:"
-        grep -n "def restore_test_env" "$TARGET" || true
         sed -n '49,53p' "$TARGET" || true
 
-        python3 -c "
-import re
-with open('$TARGET', 'r') as f:
-    content = f.read()
-
-old = '''@pytest.fixture(scope=\"module\", autouse=True)
-def restore_test_env(duthosts, rand_one_dut_front_end_hostname):
-    duthost = duthosts[rand_one_dut_front_end_hostname]
-    config_reload(duthost, config_source=\"minigraph\", safe_reload=True)
-    yield'''
-
-new = '''@pytest.fixture(scope=\"module\", autouse=True)
-def restore_test_env(duthosts, rand_one_dut_front_end_hostname):
-    duthost = duthosts[rand_one_dut_front_end_hostname]
-    duthost.shell(\"cp /etc/sonic/config_db.json /etc/sonic/config_db.json.before_cacl\")
-    config_reload(duthost, config_source=\"minigraph\", safe_reload=True)
-    yield
-    logger.info(\"Restoring original config_db.json after test_cacl module\")
-    duthost.shell(\"cp /etc/sonic/config_db.json.before_cacl /etc/sonic/config_db.json\")
-    config_reload(duthost, safe_reload=True)
-    duthost.shell(\"rm -f /etc/sonic/config_db.json.before_cacl\")'''
-
-if old in content:
-    content = content.replace(old, new)
-    with open('$TARGET', 'w') as f:
-        f.write(content)
-    print('SUCCESS: test_cacl.py patched')
-else:
-    print('WARNING: Pattern not found - file may already be patched or has different content')
-    print('Looking for restore_test_env:')
-    for i, line in enumerate(content.split('\n'), 1):
-        if 'restore_test_env' in line or 'before_cacl' in line:
-            print(f'  Line {i}: {line}')
-"
+        echo "aW1wb3J0IHN5cwp0YXJnZXQgPSBzeXMuYXJndlsxXQp3aXRoIG9wZW4odGFyZ2V0LCAncicpIGFzIGY6CiAgICBjb250ZW50ID0gZi5yZWFkKCkKb2xkID0gJ0BweXRlc3QuZml4dHVyZShzY29wZT0ibW9kdWxlIiwgYXV0b3VzZT1UcnVlKVxuZGVmIHJlc3RvcmVfdGVzdF9lbnYoZHV0aG9zdHMsIHJhbmRfb25lX2R1dF9mcm9udF9lbmRfaG9zdG5hbWUpOlxuICAgIGR1dGhvc3QgPSBkdXRob3N0c1tyYW5kX29uZV9kdXRfZnJvbnRfZW5kX2hvc3RuYW1lXVxuICAgIGNvbmZpZ19yZWxvYWQoZHV0aG9zdCwgY29uZmlnX3NvdXJjZT0ibWluaWdyYXBoIiwgc2FmZV9yZWxvYWQ9VHJ1ZSlcbiAgICB5aWVsZCcKbmV3ID0gJ0BweXRlc3QuZml4dHVyZShzY29wZT0ibW9kdWxlIiwgYXV0b3VzZT1UcnVlKVxuZGVmIHJlc3RvcmVfdGVzdF9lbnYoZHV0aG9zdHMsIHJhbmRfb25lX2R1dF9mcm9udF9lbmRfaG9zdG5hbWUpOlxuICAgIGR1dGhvc3QgPSBkdXRob3N0c1tyYW5kX29uZV9kdXRfZnJvbnRfZW5kX2hvc3RuYW1lXVxuICAgIGR1dGhvc3Quc2hlbGwoImNwIC9ldGMvc29uaWMvY29uZmlnX2RiLmpzb24gL2V0Yy9zb25pYy9jb25maWdfZGIuanNvbi5iZWZvcmVfY2FjbCIpXG4gICAgY29uZmlnX3JlbG9hZChkdXRob3N0LCBjb25maWdfc291cmNlPSJtaW5pZ3JhcGgiLCBzYWZlX3JlbG9hZD1UcnVlKVxuICAgIHlpZWxkXG4gICAgbG9nZ2VyLmluZm8oIlJlc3RvcmluZyBvcmlnaW5hbCBjb25maWdfZGIuanNvbiBhZnRlciB0ZXN0X2NhY2wgbW9kdWxlIilcbiAgICBkdXRob3N0LnNoZWxsKCJjcCAvZXRjL3NvbmljL2NvbmZpZ19kYi5qc29uLmJlZm9yZV9jYWNsIC9ldGMvc29uaWMvY29uZmlnX2RiLmpzb24iKVxuICAgIGNvbmZpZ19yZWxvYWQoZHV0aG9zdCwgc2FmZV9yZWxvYWQ9VHJ1ZSlcbiAgICBkdXRob3N0LnNoZWxsKCJybSAtZiAvZXRjL3NvbmljL2NvbmZpZ19kYi5qc29uLmJlZm9yZV9jYWNsIiknCmlmIG9sZCBpbiBjb250ZW50OgogICAgY29udGVudCA9IGNvbnRlbnQucmVwbGFjZShvbGQsIG5ldykKICAgIHdpdGggb3Blbih0YXJnZXQsICd3JykgYXMgZjoKICAgICAgICBmLndyaXRlKGNvbnRlbnQpCiAgICBwcmludCgnU1VDQ0VTUzogdGVzdF9jYWNsLnB5IHBhdGNoZWQnKQplbHNlOgogICAgcHJpbnQoJ1dBUk5JTkc6IFBhdHRlcm4gbm90IGZvdW5kLCBjaGVja2luZyBmaWxlIGNvbnRlbnQuLi4nKQogICAgZm9yIGksIGxpbmUgaW4gZW51bWVyYXRlKGNvbnRlbnQuc3BsaXQoJ1xuJyksIDEpOgogICAgICAgIGlmICdyZXN0b3JlX3Rlc3RfZW52JyBpbiBsaW5lIG9yICdiZWZvcmVfY2FjbCcgaW4gbGluZToKICAgICAgICAgICAgcHJpbnQoZicgIExpbmUge2l9OiB7bGluZX0nKQo=" | base64 -d > /tmp/patch_cacl.py
+        python3 /tmp/patch_cacl.py "$TARGET"
 
         echo "After patch:"
         sed -n '49,62p' "$TARGET" || true
