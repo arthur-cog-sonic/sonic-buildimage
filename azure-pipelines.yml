@@ -318,7 +318,12 @@ stages:
 
         echo "After patch:"
         sed -n '49,62p' "$TARGET" || true
-      displayName: "Patch test_cacl.py with config restore fix"
+
+        echo "=== Fixing kvmtest.sh: test_ipv6.py was renamed to test_ip_bgp.py ==="
+        KVMTEST="/data/sonic-mgmt/tests/kvmtest.sh"
+        sed -i 's|generic_config_updater/test_ipv6\.py|generic_config_updater/test_ip_bgp.py|g' "$KVMTEST"
+        echo "kvmtest.sh patched"
+      displayName: "Patch sonic-mgmt with upstream fixes"
       continueOnError: true
 
     - script: |
