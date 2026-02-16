@@ -190,24 +190,6 @@ stages:
         fi
       displayName: "Ensure sonic-mgmt container exists"
 
-    - script: |
-        set -ex
-        LOG="$(Build.ArtifactStagingDirectory)/logs/update-sonic-mgmt.log"
-        exec > >(tee -a "$LOG") 2>&1
-
-        TARGET="/data/sonic-mgmt/tests/generic_config_updater/test_cacl.py"
-        echo "=== Patching test_cacl.py with config restore fix ==="
-        echo "Before patch:"
-        sed -n '49,53p' "$TARGET" || true
-
-        echo "aW1wb3J0IHN5cwp0YXJnZXQgPSBzeXMuYXJndlsxXQp3aXRoIG9wZW4odGFyZ2V0LCAncicpIGFzIGY6CiAgICBjb250ZW50ID0gZi5yZWFkKCkKb2xkID0gJ0BweXRlc3QuZml4dHVyZShzY29wZT0ibW9kdWxlIiwgYXV0b3VzZT1UcnVlKVxuZGVmIHJlc3RvcmVfdGVzdF9lbnYoZHV0aG9zdHMsIHJhbmRfb25lX2R1dF9mcm9udF9lbmRfaG9zdG5hbWUpOlxuICAgIGR1dGhvc3QgPSBkdXRob3N0c1tyYW5kX29uZV9kdXRfZnJvbnRfZW5kX2hvc3RuYW1lXVxuICAgIGNvbmZpZ19yZWxvYWQoZHV0aG9zdCwgY29uZmlnX3NvdXJjZT0ibWluaWdyYXBoIiwgc2FmZV9yZWxvYWQ9VHJ1ZSlcbiAgICB5aWVsZCcKbmV3ID0gJ0BweXRlc3QuZml4dHVyZShzY29wZT0ibW9kdWxlIiwgYXV0b3VzZT1UcnVlKVxuZGVmIHJlc3RvcmVfdGVzdF9lbnYoZHV0aG9zdHMsIHJhbmRfb25lX2R1dF9mcm9udF9lbmRfaG9zdG5hbWUpOlxuICAgIGR1dGhvc3QgPSBkdXRob3N0c1tyYW5kX29uZV9kdXRfZnJvbnRfZW5kX2hvc3RuYW1lXVxuICAgIGR1dGhvc3Quc2hlbGwoImNwIC9ldGMvc29uaWMvY29uZmlnX2RiLmpzb24gL2V0Yy9zb25pYy9jb25maWdfZGIuanNvbi5iZWZvcmVfY2FjbCIpXG4gICAgY29uZmlnX3JlbG9hZChkdXRob3N0LCBjb25maWdfc291cmNlPSJtaW5pZ3JhcGgiLCBzYWZlX3JlbG9hZD1UcnVlKVxuICAgIHlpZWxkXG4gICAgbG9nZ2VyLmluZm8oIlJlc3RvcmluZyBvcmlnaW5hbCBjb25maWdfZGIuanNvbiBhZnRlciB0ZXN0X2NhY2wgbW9kdWxlIilcbiAgICBkdXRob3N0LnNoZWxsKCJjcCAvZXRjL3NvbmljL2NvbmZpZ19kYi5qc29uLmJlZm9yZV9jYWNsIC9ldGMvc29uaWMvY29uZmlnX2RiLmpzb24iKVxuICAgIGNvbmZpZ19yZWxvYWQoZHV0aG9zdCwgc2FmZV9yZWxvYWQ9VHJ1ZSlcbiAgICBkdXRob3N0LnNoZWxsKCJybSAtZiAvZXRjL3NvbmljL2NvbmZpZ19kYi5qc29uLmJlZm9yZV9jYWNsIiknCmlmIG9sZCBpbiBjb250ZW50OgogICAgY29udGVudCA9IGNvbnRlbnQucmVwbGFjZShvbGQsIG5ldykKICAgIHdpdGggb3Blbih0YXJnZXQsICd3JykgYXMgZjoKICAgICAgICBmLndyaXRlKGNvbnRlbnQpCiAgICBwcmludCgnU1VDQ0VTUzogdGVzdF9jYWNsLnB5IHBhdGNoZWQnKQplbHNlOgogICAgcHJpbnQoJ1dBUk5JTkc6IFBhdHRlcm4gbm90IGZvdW5kLCBjaGVja2luZyBmaWxlIGNvbnRlbnQuLi4nKQogICAgZm9yIGksIGxpbmUgaW4gZW51bWVyYXRlKGNvbnRlbnQuc3BsaXQoJ1xuJyksIDEpOgogICAgICAgIGlmICdyZXN0b3JlX3Rlc3RfZW52JyBpbiBsaW5lIG9yICdiZWZvcmVfY2FjbCcgaW4gbGluZToKICAgICAgICAgICAgcHJpbnQoZicgIExpbmUge2l9OiB7bGluZX0nKQo=" | base64 -d > /tmp/patch_cacl.py
-        python3 /tmp/patch_cacl.py "$TARGET"
-
-        echo "After patch:"
-        sed -n '49,62p' "$TARGET" || true
-      displayName: "Patch test_cacl.py with config restore fix"
-      continueOnError: true
-
     - task: DownloadPipelineArtifact@2
       inputs:
         artifact: sonic-buildimage.vs
@@ -320,6 +302,24 @@ stages:
         echo "Running testbed-cli.sh refresh-dut..."
         docker exec sonic-mgmt bash -c "pushd /data/sonic-mgmt/ansible;./testbed-cli.sh -d /data/sonic-vm -m $(inventory) -t $(testbed_file) -k ceos refresh-dut vms-kvm-t0 password.txt" && sleep 180
       displayName: "Setup testbed"
+
+    - script: |
+        set -ex
+        LOG="$(Build.ArtifactStagingDirectory)/logs/update-sonic-mgmt.log"
+        exec > >(tee -a "$LOG") 2>&1
+
+        TARGET="/data/sonic-mgmt/tests/generic_config_updater/test_cacl.py"
+        echo "=== Patching test_cacl.py with config restore fix ==="
+        echo "Before patch:"
+        sed -n '49,53p' "$TARGET" || true
+
+        echo "aW1wb3J0IHN5cwp0YXJnZXQgPSBzeXMuYXJndlsxXQp3aXRoIG9wZW4odGFyZ2V0LCAncicpIGFzIGY6CiAgICBjb250ZW50ID0gZi5yZWFkKCkKb2xkID0gJ0BweXRlc3QuZml4dHVyZShzY29wZT0ibW9kdWxlIiwgYXV0b3VzZT1UcnVlKVxuZGVmIHJlc3RvcmVfdGVzdF9lbnYoZHV0aG9zdHMsIHJhbmRfb25lX2R1dF9mcm9udF9lbmRfaG9zdG5hbWUpOlxuICAgIGR1dGhvc3QgPSBkdXRob3N0c1tyYW5kX29uZV9kdXRfZnJvbnRfZW5kX2hvc3RuYW1lXVxuICAgIGNvbmZpZ19yZWxvYWQoZHV0aG9zdCwgY29uZmlnX3NvdXJjZT0ibWluaWdyYXBoIiwgc2FmZV9yZWxvYWQ9VHJ1ZSlcbiAgICB5aWVsZCcKbmV3ID0gJ0BweXRlc3QuZml4dHVyZShzY29wZT0ibW9kdWxlIiwgYXV0b3VzZT1UcnVlKVxuZGVmIHJlc3RvcmVfdGVzdF9lbnYoZHV0aG9zdHMsIHJhbmRfb25lX2R1dF9mcm9udF9lbmRfaG9zdG5hbWUpOlxuICAgIGR1dGhvc3QgPSBkdXRob3N0c1tyYW5kX29uZV9kdXRfZnJvbnRfZW5kX2hvc3RuYW1lXVxuICAgIGR1dGhvc3Quc2hlbGwoImNwIC9ldGMvc29uaWMvY29uZmlnX2RiLmpzb24gL2V0Yy9zb25pYy9jb25maWdfZGIuanNvbi5iZWZvcmVfY2FjbCIpXG4gICAgY29uZmlnX3JlbG9hZChkdXRob3N0LCBjb25maWdfc291cmNlPSJtaW5pZ3JhcGgiLCBzYWZlX3JlbG9hZD1UcnVlKVxuICAgIHlpZWxkXG4gICAgbG9nZ2VyLmluZm8oIlJlc3RvcmluZyBvcmlnaW5hbCBjb25maWdfZGIuanNvbiBhZnRlciB0ZXN0X2NhY2wgbW9kdWxlIilcbiAgICBkdXRob3N0LnNoZWxsKCJjcCAvZXRjL3NvbmljL2NvbmZpZ19kYi5qc29uLmJlZm9yZV9jYWNsIC9ldGMvc29uaWMvY29uZmlnX2RiLmpzb24iKVxuICAgIGNvbmZpZ19yZWxvYWQoZHV0aG9zdCwgc2FmZV9yZWxvYWQ9VHJ1ZSlcbiAgICBkdXRob3N0LnNoZWxsKCJybSAtZiAvZXRjL3NvbmljL2NvbmZpZ19kYi5qc29uLmJlZm9yZV9jYWNsIiknCmlmIG9sZCBpbiBjb250ZW50OgogICAgY29udGVudCA9IGNvbnRlbnQucmVwbGFjZShvbGQsIG5ldykKICAgIHdpdGggb3Blbih0YXJnZXQsICd3JykgYXMgZjoKICAgICAgICBmLndyaXRlKGNvbnRlbnQpCiAgICBwcmludCgnU1VDQ0VTUzogdGVzdF9jYWNsLnB5IHBhdGNoZWQnKQplbHNlOgogICAgcHJpbnQoJ1dBUk5JTkc6IFBhdHRlcm4gbm90IGZvdW5kLCBjaGVja2luZyBmaWxlIGNvbnRlbnQuLi4nKQogICAgZm9yIGksIGxpbmUgaW4gZW51bWVyYXRlKGNvbnRlbnQuc3BsaXQoJ1xuJyksIDEpOgogICAgICAgIGlmICdyZXN0b3JlX3Rlc3RfZW52JyBpbiBsaW5lIG9yICdiZWZvcmVfY2FjbCcgaW4gbGluZToKICAgICAgICAgICAgcHJpbnQoZicgIExpbmUge2l9OiB7bGluZX0nKQo=" | base64 -d > /tmp/patch_cacl.py
+        python3 /tmp/patch_cacl.py "$TARGET"
+
+        echo "After patch:"
+        sed -n '49,62p' "$TARGET" || true
+      displayName: "Patch test_cacl.py with config restore fix"
+      continueOnError: true
 
     - script: |
         LOG="$(Build.ArtifactStagingDirectory)/logs/kvmtest-run.log"
