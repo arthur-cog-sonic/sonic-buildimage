@@ -190,6 +190,25 @@ stages:
         fi
       displayName: "Ensure sonic-mgmt container exists"
 
+    - script: |
+        set -ex
+        LOG="$(Build.ArtifactStagingDirectory)/logs/update-sonic-mgmt.log"
+        exec > >(tee -a "$LOG") 2>&1
+
+        echo "=== Updating /data/sonic-mgmt from arthur-cog-sonic fork ==="
+        cd /data/sonic-mgmt
+
+        if ! git remote get-url arthur-fork 2>/dev/null; then
+          git remote add arthur-fork https://github.com/arthur-cog-sonic/sonic-mgmt.git
+        fi
+
+        git fetch arthur-fork devin/1771222385-fix-cacl-config-restore
+        git checkout arthur-fork/devin/1771222385-fix-cacl-config-restore -- tests/generic_config_updater/test_cacl.py
+        echo "=== Updated test_cacl.py with config restore fix ==="
+        git diff --stat HEAD
+      displayName: "Update sonic-mgmt with test fixes"
+      continueOnError: true
+
     - task: DownloadPipelineArtifact@2
       inputs:
         artifact: sonic-buildimage.vs
