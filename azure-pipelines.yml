@@ -294,6 +294,7 @@ except Exception as ex:
           exit 0
         fi
 
+        set +x
         GH_TOKEN=""
         for DIR in "$(Pipeline.Workspace)/s/sonic-mgmt" "$(Pipeline.Workspace)/s/sonic-buildimage" "sonic-mgmt" "sonic-buildimage"; do
           if [ -d "$DIR/.git" ]; then
@@ -311,6 +312,7 @@ except Exception as ex:
           exit 0
         fi
 
+        echo "GitHub token extracted, posting comment..."
         PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'body': sys.stdin.read()}))" < "$COMMENT_FILE")
         HTTP_CODE=$(curl -s -o /tmp/gh_resp.json -w '%{http_code}' \
           -X POST \
@@ -318,6 +320,7 @@ except Exception as ex:
           -H "Accept: application/vnd.github.v3+json" \
           "https://api.github.com/repos/arthur-cog-sonic/sonic-buildimage/issues/$PR_NUMBER/comments" \
           -d "$PAYLOAD")
+        set -x
 
         echo "GitHub API response: $HTTP_CODE"
         if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
