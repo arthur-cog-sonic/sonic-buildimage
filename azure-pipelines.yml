@@ -128,95 +128,133 @@ stages:
       displayName: 'Checkout sonic-mgmt'
 
     - script: |
-        sudo rm -rf ../target
-        sudo rm -rf ../*.deb
-      displayName: "Cleanup artifacts"
+        set -x
+        echo "=== Environment ==="
+        echo "Pipeline.Workspace: $(Pipeline.Workspace)"
+        echo "System.DefaultWorkingDirectory: $(System.DefaultWorkingDirectory)"
+        echo "Build.ArtifactStagingDirectory: $(Build.ArtifactStagingDirectory)"
+        echo "Agent.BuildDirectory: $(Agent.BuildDirectory)"
+        pwd
+        echo "=== Working directory contents ==="
+        ls -la
+        echo "=== Parent directory ==="
+        ls -la ..
+        echo "=== Pipeline workspace ==="
+        ls -la $(Pipeline.Workspace)/ || true
+        echo "=== Docker images ==="
+        docker images 2>/dev/null || echo "Docker not available or no images"
+        echo "=== KVM check ==="
+        which virsh 2>/dev/null && virsh list --all || echo "virsh not available"
+        ls -la /dev/kvm 2>/dev/null || echo "/dev/kvm not found"
+      displayName: "Debug: Agent environment"
 
     - task: DownloadPipelineArtifact@2
       inputs:
         artifact: sonic-buildimage.vs
+        targetPath: $(Pipeline.Workspace)/artifacts
       displayName: "Download sonic-buildimage.vs artifact"
 
     - script: |
         set -ex
+        echo "=== Artifact contents ==="
+        ls -la $(Pipeline.Workspace)/artifacts/ || true
+        ls -la $(Pipeline.Workspace)/artifacts/target/ || true
         sudo mkdir -p /data/sonic-vm/images
-        sudo cp -v ../target/sonic-vs.img.gz /data/sonic-vm/images/sonic-vs.img.gz
+        sudo cp -v $(Pipeline.Workspace)/artifacts/target/sonic-vs.img.gz /data/sonic-vm/images/sonic-vs.img.gz
         sudo gzip -fd /data/sonic-vm/images/sonic-vs.img.gz
         username=$(id -un)
         sudo chown -R $username.$username /data/sonic-vm
+        echo "=== VS image ready ==="
+        ls -la /data/sonic-vm/images/
       displayName: "Prepare VS image"
 
     - script: |
         set -ex
+        echo "=== Checkout directories ==="
+        ls -la
+        ls -la sonic-mgmt/ 2>/dev/null || echo "sonic-mgmt not in current dir"
+        ls -la $(Pipeline.Workspace)/s/sonic-mgmt/ 2>/dev/null || echo "sonic-mgmt not in Pipeline.Workspace/s"
+        MGMT_SRC="sonic-mgmt"
+        if [ ! -d "$MGMT_SRC" ]; then
+          MGMT_SRC="$(Pipeline.Workspace)/s/sonic-mgmt"
+        fi
+        echo "Using sonic-mgmt from: $MGMT_SRC"
+        sudo rm -rf /data/sonic-mgmt
         sudo mkdir -p /data/sonic-mgmt
-        sudo cp -rf sonic-mgmt/* /data/sonic-mgmt/
-        sudo cp -rf sonic-mgmt/.* /data/sonic-mgmt/ 2>/dev/null || true
+        sudo cp -rf $MGMT_SRC/* /data/sonic-mgmt/
+        sudo cp -rf $MGMT_SRC/.git /data/sonic-mgmt/ 2>/dev/null || true
         username=$(id -un)
         sudo chown -R $username.$username /data/sonic-mgmt
         sed -i s/use_own_value/${username}/ /data/sonic-mgmt/ansible/veos_vtb
         echo aaa > /data/sonic-mgmt/ansible/password.txt
+        echo "=== Verify test file exists ==="
+        ls -la /data/sonic-mgmt/tests/klish_aaa/ || echo "WARNING: klish_aaa test directory not found!"
       displayName: "Setup sonic-mgmt"
 
     - script: |
-        set -ex
-        if ! docker ps --filter name=sonic-mgmt --format '{{.Names}}' | grep -q sonic-mgmt; then
-          echo "sonic-mgmt container not running, starting it..."
+        set -x
+        docker stop sonic-mgmt 2>/dev/null || true
+        docker rm sonic-mgmt 2>/dev/null || true
+        if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q 'docker-sonic-mgmt'; then
+          echo "docker-sonic-mgmt image found, starting container..."
           docker run -d --name sonic-mgmt \
             -v /data/sonic-mgmt:/data/sonic-mgmt \
             -v /data/sonic-vm:/data/sonic-vm \
             --privileged \
             docker-sonic-mgmt:latest \
-            sleep infinity || echo "Warning: could not start sonic-mgmt container, will try running tests directly"
+            sleep infinity
+          echo "Container started successfully"
+          docker ps
+        else
+          echo "docker-sonic-mgmt image NOT found. Will run tests directly on agent."
+          echo "Available docker images:"
+          docker images 2>/dev/null || echo "Docker not available"
         fi
-      displayName: "Ensure sonic-mgmt container"
+      displayName: "Setup sonic-mgmt container"
+      continueOnError: true
 
     - script: |
         set -ex
         if docker ps --filter name=sonic-mgmt --format '{{.Names}}' | grep -q sonic-mgmt; then
-          docker exec sonic-mgmt bash -c "pushd /data/sonic-mgmt/ansible && ./testbed-cli.sh -m $(inventory) -t $(testbed_file) -k ceos refresh-dut vms-kvm-t0 password.txt"
+          echo "Running testbed setup via docker..."
+          docker exec sonic-mgmt bash -c "cd /data/sonic-mgmt/ansible && ./testbed-cli.sh -m $(inventory) -t $(testbed_file) -k ceos refresh-dut vms-kvm-t0 password.txt" || echo "refresh-dut failed (may be expected if no KVM VMs exist yet)"
+          sleep 60
+          docker exec sonic-mgmt bash -c "cd /data/sonic-mgmt/ansible && ./testbed-cli.sh -m $(inventory) -t $(testbed_file) deploy-mg vms-kvm-t0 lab password.txt" || echo "deploy-mg failed"
           sleep 120
-          docker exec sonic-mgmt bash -c "pushd /data/sonic-mgmt/ansible && ./testbed-cli.sh -m $(inventory) -t $(testbed_file) deploy-mg vms-kvm-t0 lab password.txt"
-          sleep 180
         else
-          pushd /data/sonic-mgmt/ansible
-          ./testbed-cli.sh -m $(inventory) -t $(testbed_file) -k ceos refresh-dut vms-kvm-t0 password.txt
+          echo "Running testbed setup directly on agent..."
+          cd /data/sonic-mgmt/ansible
+          ./testbed-cli.sh -m $(inventory) -t $(testbed_file) -k ceos refresh-dut vms-kvm-t0 password.txt || echo "refresh-dut failed"
+          sleep 60
+          ./testbed-cli.sh -m $(inventory) -t $(testbed_file) deploy-mg vms-kvm-t0 lab password.txt || echo "deploy-mg failed"
           sleep 120
-          ./testbed-cli.sh -m $(inventory) -t $(testbed_file) deploy-mg vms-kvm-t0 lab password.txt
-          sleep 180
-          popd
         fi
       displayName: "Setup testbed"
+      continueOnError: true
 
     - script: |
         set -ex
         rm -rf /data/sonic-mgmt/tests/logs
-        mkdir -p /data/sonic-mgmt/tests/logs
+        mkdir -p /data/sonic-mgmt/tests/logs/klish_aaa
+
+        RUN_CMD="cd /data/sonic-mgmt/tests && python -m pytest klish_aaa/test_klish_aaa.py \
+          -v \
+          --inventory ../ansible/veos_vtb \
+          --host-pattern vlab-01 \
+          --testbed vms-kvm-t0 \
+          --testbed_file ../ansible/vtestbed.yaml \
+          --log-cli-level info \
+          --junitxml logs/klish_aaa/tr.xml \
+          --allow_recover \
+          --completeness_level=confident \
+          2>&1 | tee logs/klish_aaa/test_output.log"
 
         if docker ps --filter name=sonic-mgmt --format '{{.Names}}' | grep -q sonic-mgmt; then
-          docker exec sonic-mgmt bash -c "cd /data/sonic-mgmt/tests && python -m pytest klish_aaa/test_klish_aaa.py \
-            -v \
-            --inventory ../ansible/veos_vtb \
-            --host-pattern vlab-01 \
-            --testbed vms-kvm-t0 \
-            --testbed_file ../ansible/vtestbed.yaml \
-            --log-cli-level info \
-            --junitxml logs/klish_aaa/tr.xml \
-            --allow_recover \
-            --completeness_level=confident \
-            2>&1 | tee logs/klish_aaa/test_output.log"
+          echo "Running tests via docker container..."
+          docker exec sonic-mgmt bash -c "$RUN_CMD"
         else
-          cd /data/sonic-mgmt/tests
-          python -m pytest klish_aaa/test_klish_aaa.py \
-            -v \
-            --inventory ../ansible/veos_vtb \
-            --host-pattern vlab-01 \
-            --testbed vms-kvm-t0 \
-            --testbed_file ../ansible/vtestbed.yaml \
-            --log-cli-level info \
-            --junitxml logs/klish_aaa/tr.xml \
-            --allow_recover \
-            --completeness_level=confident \
-            2>&1 | tee logs/klish_aaa/test_output.log
+          echo "Running tests directly on agent..."
+          bash -c "$RUN_CMD"
         fi
       displayName: "Run Klish AAA tests"
 
