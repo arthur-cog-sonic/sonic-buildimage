@@ -223,3 +223,110 @@ stages:
         testResultsFiles: '$(Build.ArtifactStagingDirectory)/logs/**/*.xml'
         testRunTitle: kvmtest.klish_aaa
       condition: succeededOrFailed()
+
+    - script: |
+        set -x
+        LOG_FILE="/data/sonic-mgmt/tests/logs/klish_aaa/test_output.log"
+        XML_FILE="/data/sonic-mgmt/tests/logs/klish_aaa/tr.xml"
+        COMMENT_FILE="/tmp/github_comment.md"
+
+        {
+          echo "## Klish AAA KVM Test Results"
+          echo ""
+          echo "**Build:** [#$(Build.BuildId)](https://dev.azure.com/Cisco-SONiC-PoC/579de689-fe74-4624-b499-930d501b05e8/_build/results?buildId=$(Build.BuildId)) | **Commit:** \`$(Build.SourceVersion)\`"
+          echo ""
+        } > "$COMMENT_FILE"
+
+        if [ -f "$XML_FILE" ]; then
+          python3 -c "
+import xml.etree.ElementTree as ET
+try:
+    root = ET.parse('$XML_FILE').getroot()
+    for ts in root.iter('testsuite'):
+        t,e,f,s,tm = ts.get('tests','0'),ts.get('errors','0'),ts.get('failures','0'),ts.get('skipped','0'),ts.get('time','0')
+        print('| Tests | Errors | Failures | Skipped | Time |')
+        print('|-------|--------|----------|---------|------|')
+        print(f'| {t} | {e} | {f} | {s} | {tm}s |')
+        break
+except Exception as ex:
+    print(f'_Could not parse JUnit XML: {ex}_')
+" >> "$COMMENT_FILE" 2>/dev/null
+          echo "" >> "$COMMENT_FILE"
+        else
+          echo "_No JUnit XML found - tests may not have executed._" >> "$COMMENT_FILE"
+          echo "" >> "$COMMENT_FILE"
+        fi
+
+        if [ -f "$LOG_FILE" ]; then
+          {
+            echo "<details>"
+            echo "<summary>Test Output (last 100 lines)</summary>"
+            echo ""
+            echo '```'
+            tail -100 "$LOG_FILE"
+            echo '```'
+            echo "</details>"
+            echo ""
+          } >> "$COMMENT_FILE"
+
+          FIRST_ERROR=$(grep -m1 -A10 'ERROR at setup\|FAILED\|AnsibleConnectionFailure' "$LOG_FILE" 2>/dev/null | head -15)
+          if [ -n "$FIRST_ERROR" ]; then
+            {
+              echo "<details>"
+              echo "<summary>First Error</summary>"
+              echo ""
+              echo '```'
+              echo "$FIRST_ERROR"
+              echo '```'
+              echo "</details>"
+            } >> "$COMMENT_FILE"
+          fi
+        else
+          echo "_No test output found. Tests may not have executed - check pipeline step logs._" >> "$COMMENT_FILE"
+        fi
+
+        head -c 60000 "$COMMENT_FILE" > "${COMMENT_FILE}.trunc" && mv "${COMMENT_FILE}.trunc" "$COMMENT_FILE"
+
+        PR_NUMBER="$(System.PullRequest.PullRequestNumber)"
+        if [ -z "$PR_NUMBER" ] || echo "$PR_NUMBER" | grep -q 'System.PullRequest'; then
+          echo "Not a PR build, printing comment to log:"
+          cat "$COMMENT_FILE"
+          exit 0
+        fi
+
+        GH_TOKEN=""
+        for DIR in "$(Pipeline.Workspace)/s/sonic-mgmt" "$(Pipeline.Workspace)/s/sonic-buildimage" "sonic-mgmt" "sonic-buildimage"; do
+          if [ -d "$DIR/.git" ]; then
+            HEADER=$(git -C "$DIR" config --get http.https://github.com/.extraheader 2>/dev/null || true)
+            if [ -n "$HEADER" ]; then
+              GH_TOKEN=$(echo "$HEADER" | sed 's/AUTHORIZATION: basic //' | base64 -d 2>/dev/null | cut -d: -f2)
+              [ -n "$GH_TOKEN" ] && break
+            fi
+          fi
+        done
+
+        if [ -z "$GH_TOKEN" ]; then
+          echo "Could not extract GitHub token. Printing comment to log:"
+          cat "$COMMENT_FILE"
+          exit 0
+        fi
+
+        PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'body': sys.stdin.read()}))" < "$COMMENT_FILE")
+        HTTP_CODE=$(curl -s -o /tmp/gh_resp.json -w '%{http_code}' \
+          -X POST \
+          -H "Authorization: token $GH_TOKEN" \
+          -H "Accept: application/vnd.github.v3+json" \
+          "https://api.github.com/repos/arthur-cog-sonic/sonic-buildimage/issues/$PR_NUMBER/comments" \
+          -d "$PAYLOAD")
+
+        echo "GitHub API response: $HTTP_CODE"
+        if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+          echo "Posted test results to PR #$PR_NUMBER"
+        else
+          echo "Failed to post to GitHub (HTTP $HTTP_CODE). Printing comment to log:"
+          cat /tmp/gh_resp.json 2>/dev/null
+          echo ""
+          cat "$COMMENT_FILE"
+        fi
+      displayName: "Post test results to GitHub PR"
+      condition: succeededOrFailed()
