@@ -238,19 +238,7 @@ stages:
         } > "$COMMENT_FILE"
 
         if [ -f "$XML_FILE" ]; then
-          python3 -c "
-import xml.etree.ElementTree as ET
-try:
-    root = ET.parse('$XML_FILE').getroot()
-    for ts in root.iter('testsuite'):
-        t,e,f,s,tm = ts.get('tests','0'),ts.get('errors','0'),ts.get('failures','0'),ts.get('skipped','0'),ts.get('time','0')
-        print('| Tests | Errors | Failures | Skipped | Time |')
-        print('|-------|--------|----------|---------|------|')
-        print(f'| {t} | {e} | {f} | {s} | {tm}s |')
-        break
-except Exception as ex:
-    print(f'_Could not parse JUnit XML: {ex}_')
-" >> "$COMMENT_FILE" 2>/dev/null
+          python3 -c "import xml.etree.ElementTree as ET; root=ET.parse('$XML_FILE').getroot(); ts=next(root.iter('testsuite'),None); print('| Tests | Errors | Failures | Skipped | Time |') if ts is not None else None; print('|-------|--------|----------|---------|------|') if ts is not None else None; print(f'| {ts.get(\"tests\",\"0\")} | {ts.get(\"errors\",\"0\")} | {ts.get(\"failures\",\"0\")} | {ts.get(\"skipped\",\"0\")} | {ts.get(\"time\",\"0\")}s |') if ts is not None else print('_No testsuite element found_')" >> "$COMMENT_FILE" 2>/dev/null || echo "_Could not parse JUnit XML_" >> "$COMMENT_FILE"
           echo "" >> "$COMMENT_FILE"
         else
           echo "_No JUnit XML found - tests may not have executed._" >> "$COMMENT_FILE"
