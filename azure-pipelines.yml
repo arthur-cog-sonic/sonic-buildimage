@@ -164,26 +164,21 @@ stages:
         set -ex
         docker stop sonic-mgmt 2>/dev/null || true
         docker rm sonic-mgmt 2>/dev/null || true
-        if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q 'docker-sonic-mgmt'; then
-          echo "Using existing docker-sonic-mgmt image"
+        if docker images --format '{{.Repository}}:{{.Tag}}' | grep -qx 'docker-sonic-mgmt:latest'; then
+          echo "Using existing docker-sonic-mgmt:latest image"
         else
-          echo "Building minimal docker-sonic-mgmt image..."
-          cat > /tmp/Dockerfile.sonic-mgmt <<'DOCKERFILE'
+          echo "docker-sonic-mgmt:latest not found. Building minimal image..."
+          docker images
+          cat > /tmp/Dockerfile.sonic-mgmt <<'EOF'
         FROM ubuntu:22.04
         ENV DEBIAN_FRONTEND=noninteractive
-        RUN apt-get update && apt-get install -y \
-            python3 python3-pip python3-venv python-is-python3 \
-            ansible sshpass openssh-client curl git jq \
-            iproute2 iputils-ping sudo vim net-tools \
-            libvirt-clients qemu-utils \
-            && rm -rf /var/lib/apt/lists/*
-        RUN python3 -m pip install --no-cache-dir \
-            pytest pytest-ansible pytest-html pytest-xdist \
-            paramiko netmiko netaddr jinja2 PyYAML \
-            requests retry natsort tabulate lxml \
-            pexpect passlib cryptography allure-pytest \
-            defusedxml rpyc redis jsonpatch
-        DOCKERFILE
+        RUN apt-get update && apt-get install -y python3 python3-pip python3-venv python-is-python3 ansible sshpass openssh-client curl git jq iproute2 iputils-ping sudo vim net-tools libvirt-clients qemu-utils && rm -rf /var/lib/apt/lists/*
+        RUN python3 -m pip install --no-cache-dir pytest pytest-ansible pytest-html pytest-xdist paramiko netmiko netaddr jinja2 PyYAML requests retry natsort tabulate lxml pexpect passlib cryptography allure-pytest defusedxml rpyc redis jsonpatch
+        EOF
+          sed -i 's/^[[:space:]]*//' /tmp/Dockerfile.sonic-mgmt
+          echo "=== Dockerfile contents ==="
+          cat /tmp/Dockerfile.sonic-mgmt
+          echo "=== Building ==="
           docker build -t docker-sonic-mgmt:latest -f /tmp/Dockerfile.sonic-mgmt /tmp/
         fi
         docker run -d --name sonic-mgmt \
