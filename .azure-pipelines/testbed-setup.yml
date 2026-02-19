@@ -1,0 +1,265 @@
+# One-time testbed initialization pipeline for sonic-build-01.
+# This pipeline sets up the KVM testbed infrastructure (add-topo + deploy-mg)
+# so that subsequent test pipeline runs can use refresh-dut.
+#
+# Run this once on a fresh agent, or after a full testbed teardown.
+# Trigger: manual only.
+
+trigger: none
+pr: none
+
+parameters:
+  - name: TOPOLOGY
+    type: string
+    default: "t0"
+    values:
+      - t0
+      - t1-lag
+      - dualtor
+      - multi-asic-t1-lag
+      - t2
+
+  - name: VM_TYPE
+    type: string
+    default: "ceos"
+    values:
+      - ceos
+      - veos
+
+  - name: VS_IMAGE_URL
+    type: string
+    default: ""
+    displayName: "URL to download sonic-vs.img.gz (leave empty to use cached image on agent or BuildVS artifact)"
+
+  - name: SONIC_MGMT_REPO
+    type: string
+    default: "https://github.com/arthur-cog-sonic/sonic-mgmt.git"
+
+  - name: SONIC_MGMT_BRANCH
+    type: string
+    default: "master"
+
+  - name: SKIP_DOCKER_PTF_PULL
+    type: boolean
+    default: false
+    displayName: "Skip pulling docker-ptf image (use if already cached)"
+
+pool: sonic-build
+
+jobs:
+  - job: setup_testbed
+    displayName: "Initialize KVM testbed"
+    timeoutInMinutes: 120
+    steps:
+      - checkout: none
+
+      - script: |
+          set -ex
+          echo "##[section]Checking KVM/libvirt prerequisites"
+
+          echo "--- KVM support ---"
+          if [ -e /dev/kvm ]; then
+            echo "KVM device exists: /dev/kvm"
+            ls -la /dev/kvm
+          else
+            echo "##[warning]No /dev/kvm found. Nested virtualization may not be enabled."
+          fi
+
+          echo "--- libvirt ---"
+          which virsh && virsh --version || echo "##[warning]virsh not found"
+          sudo systemctl status libvirtd --no-pager || echo "##[warning]libvirtd not running"
+
+          echo "--- QEMU ---"
+          which qemu-system-x86_64 && qemu-system-x86_64 --version || echo "##[warning]qemu-system-x86_64 not found"
+
+          echo "--- Docker ---"
+          docker --version
+          docker info --format '{{.ServerVersion}}' || true
+
+          echo "--- Existing VMs ---"
+          sudo virsh list --all 2>/dev/null || echo "No VMs defined"
+
+          echo "--- Existing Docker containers ---"
+          docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" || true
+
+          echo "--- Disk space ---"
+          df -h /data 2>/dev/null || df -h /
+
+          echo "##[section]Prerequisites check complete"
+        displayName: "Check prerequisites"
+
+      - script: |
+          set -ex
+          echo "##[section]Preparing sonic-vs image"
+
+          sudo mkdir -p /data/sonic-vm/images /data/sonic-vm/disks
+
+          IMAGE_URL="${{ parameters.VS_IMAGE_URL }}"
+          IMAGE_URL=$(echo "$IMAGE_URL" | xargs)
+
+          if [ -f "/data/sonic-vm/images/sonic-vs.img" ]; then
+            echo "sonic-vs.img already exists on agent, reusing"
+            ls -lh /data/sonic-vm/images/sonic-vs.img
+          elif [ -n "$IMAGE_URL" ]; then
+            echo "Downloading sonic-vs.img.gz from: $IMAGE_URL"
+            sudo wget -q -O /data/sonic-vm/images/sonic-vs.img.gz "$IMAGE_URL"
+            sudo gzip -fd /data/sonic-vm/images/sonic-vs.img.gz
+          elif [ -f "/data/sonic-vm/images/sonic-vs.img.gz" ]; then
+            echo "Found compressed image, decompressing"
+            sudo gzip -fd /data/sonic-vm/images/sonic-vs.img.gz
+          else
+            echo "##[error]No sonic-vs.img found. Provide VS_IMAGE_URL or cache the image on the agent."
+            echo "You can get the image from a successful BuildVS pipeline run artifact."
+            exit 1
+          fi
+
+          ls -lh /data/sonic-vm/images/sonic-vs.img
+
+          username=$(id -un)
+          sudo chown -R $username.$username /data/sonic-vm
+        displayName: "Prepare VS image"
+
+      - script: |
+          set -ex
+          echo "##[section]Ensuring docker-sonic-mgmt image"
+
+          if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^docker-sonic-mgmt:latest$"; then
+            echo "docker-sonic-mgmt:latest found in local Docker cache"
+            docker images | grep sonic-mgmt
+          elif [ -f "/data/cache/docker-sonic-mgmt.gz" ]; then
+            echo "Loading docker-sonic-mgmt from cache file"
+            docker load -i /data/cache/docker-sonic-mgmt.gz
+            docker images | grep sonic-mgmt
+          else
+            echo "##[error]No docker-sonic-mgmt image found."
+            echo "Build it from sonic-mgmt repo or load a cached copy:"
+            echo "  docker load -i /path/to/docker-sonic-mgmt.gz"
+            exit 1
+          fi
+        displayName: "Ensure docker-sonic-mgmt image"
+
+      - script: |
+          set -ex
+          echo "##[section]Ensuring docker-ptf image"
+
+          SKIP_PTF="${{ parameters.SKIP_DOCKER_PTF_PULL }}"
+          if [ "$SKIP_PTF" = "True" ] || [ "$SKIP_PTF" = "true" ]; then
+            echo "Skipping docker-ptf pull (SKIP_DOCKER_PTF_PULL=true)"
+            exit 0
+          fi
+
+          if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "docker-ptf"; then
+            echo "docker-ptf image found"
+            docker images | grep docker-ptf
+          else
+            echo "Pulling docker-ptf from sonicdev-microsoft.azurecr.io"
+            docker pull sonicdev-microsoft.azurecr.io:443/docker-ptf:latest || {
+              echo "##[warning]Failed to pull docker-ptf. Tests requiring PTF will fail."
+              echo "You may need to manually load docker-ptf onto the agent."
+            }
+          fi
+        displayName: "Ensure docker-ptf image"
+
+      - script: |
+          set -ex
+          echo "##[section]Cloning sonic-mgmt and setting up container"
+
+          SONIC_MGMT_DIR=/data/sonic-mgmt
+          REPO="${{ parameters.SONIC_MGMT_REPO }}"
+          BRANCH="${{ parameters.SONIC_MGMT_BRANCH }}"
+
+          username=$(id -un)
+
+          sudo rm -rf $SONIC_MGMT_DIR
+          sudo mkdir -p $SONIC_MGMT_DIR
+          sudo chown -R $username.$username $SONIC_MGMT_DIR
+
+          git clone --branch $BRANCH --single-branch $REPO $SONIC_MGMT_DIR
+
+          docker rm -f sonic-mgmt 2>/dev/null || true
+
+          cd $SONIC_MGMT_DIR
+          if [ -f "./setup-container.sh" ]; then
+            ./setup-container.sh -n sonic-mgmt -d /data -i docker-sonic-mgmt -v
+          else
+            docker run -d --name sonic-mgmt --privileged \
+              -v /data/sonic-vm:/data/sonic-vm \
+              -v /data/sonic-mgmt:/data/sonic-mgmt \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              docker-sonic-mgmt bash -c "while true; do sleep 3600; done"
+          fi
+
+          docker exec sonic-mgmt bash -c "echo 'sonic-mgmt container is running'"
+        displayName: "Setup sonic-mgmt container"
+
+      - script: |
+          set -x
+          echo "##[section]Running add-topo to initialize testbed"
+
+          TOPOLOGY="${{ parameters.TOPOLOGY }}"
+          VM_TYPE="${{ parameters.VM_TYPE }}"
+
+          TBNAME=vms-kvm-t0
+          case "$TOPOLOGY" in
+            t0)                TBNAME=vms-kvm-t0 ;;
+            t1-lag)            TBNAME=vms-kvm-t1-lag ;;
+            dualtor)           TBNAME=vms-kvm-dual-t0 ;;
+            multi-asic-t1-lag) TBNAME=vms-kvm-four-asic-t1-lag ;;
+            t2)                TBNAME=vms-kvm-t2 ;;
+          esac
+
+          SONIC_MGMT_DIR=/data/sonic-mgmt
+          INVENTORY=veos_vtb
+          TESTBED_FILE=vtestbed.yaml
+
+          pushd $SONIC_MGMT_DIR
+          username=$(id -un)
+          sed -i s/use_own_value/${username}/ ansible/$INVENTORY
+          echo "aaa" > ansible/password.txt
+
+          echo "##[section]Running: testbed-cli.sh add-topo $TBNAME"
+          docker exec sonic-mgmt bash -c \
+            "pushd /data/sonic-mgmt/ansible && \
+             ./testbed-cli.sh -d /data/sonic-vm -m $INVENTORY -t $TESTBED_FILE -k $VM_TYPE add-topo $TBNAME password.txt"
+
+          echo "Waiting 120s for topology to stabilize..."
+          sleep 120
+
+          echo "##[section]Running: testbed-cli.sh deploy-mg $TBNAME"
+          docker exec sonic-mgmt bash -c \
+            "pushd /data/sonic-mgmt/ansible && \
+             ./testbed-cli.sh -m $INVENTORY -t $TESTBED_FILE deploy-mg $TBNAME lab password.txt"
+
+          echo "Waiting 180s for config to apply..."
+          sleep 180
+          popd
+        displayName: "Initialize testbed (add-topo + deploy-mg)"
+        timeoutInMinutes: 60
+
+      - script: |
+          set -x
+          echo "##[section]Verifying testbed"
+
+          echo "--- KVM VMs ---"
+          sudo virsh list --all 2>/dev/null || true
+
+          echo "--- Docker containers ---"
+          docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" || true
+
+          echo "--- Network interfaces ---"
+          ip link show | grep -E "vlab|br1|ptf" || true
+
+          echo "--- Management network ---"
+          ip addr show br1 2>/dev/null || true
+
+          echo "--- Ping DUT (IPv4) ---"
+          ping -c 3 10.250.0.101 2>/dev/null && echo "DUT reachable via IPv4" || echo "##[warning]DUT not reachable via IPv4"
+
+          echo "--- Ping DUT (IPv6) ---"
+          ping6 -c 3 fec0::ffff:afa:1 2>/dev/null && echo "DUT reachable via IPv6" || echo "##[warning]DUT not reachable via IPv6"
+
+          echo "--- SSH to DUT ---"
+          sshpass -p password ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 admin@10.250.0.101 "show version" 2>/dev/null || echo "##[warning]SSH to DUT failed"
+
+          echo "##[section]Testbed verification complete"
+        displayName: "Verify testbed"
