@@ -164,19 +164,38 @@ stages:
         set -ex
         docker stop sonic-mgmt 2>/dev/null || true
         docker rm sonic-mgmt 2>/dev/null || true
-        if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q 'docker-sonic-mgmt'; then
-          echo "ERROR: docker-sonic-mgmt image not found!"
-          docker images
-          exit 1
+        if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q 'docker-sonic-mgmt'; then
+          echo "Using existing docker-sonic-mgmt image"
+        else
+          echo "Building minimal docker-sonic-mgmt image..."
+          cat > /tmp/Dockerfile.sonic-mgmt <<'DOCKERFILE'
+        FROM ubuntu:22.04
+        ENV DEBIAN_FRONTEND=noninteractive
+        RUN apt-get update && apt-get install -y \
+            python3 python3-pip python3-venv python-is-python3 \
+            ansible sshpass openssh-client curl git jq \
+            iproute2 iputils-ping sudo vim net-tools \
+            libvirt-clients qemu-utils \
+            && rm -rf /var/lib/apt/lists/*
+        RUN python3 -m pip install --no-cache-dir \
+            pytest pytest-ansible pytest-html pytest-xdist \
+            paramiko netmiko netaddr jinja2 PyYAML \
+            requests retry natsort tabulate lxml \
+            pexpect passlib cryptography allure-pytest \
+            defusedxml rpyc redis jsonpatch
+        DOCKERFILE
+          docker build -t docker-sonic-mgmt:latest -f /tmp/Dockerfile.sonic-mgmt /tmp/
         fi
         docker run -d --name sonic-mgmt \
           -v /data/sonic-mgmt:/data/sonic-mgmt \
           -v /data/sonic-vm:/data/sonic-vm \
-          --privileged \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          --privileged --network host \
           docker-sonic-mgmt:latest \
           sleep infinity
         sleep 5
         docker ps --filter name=sonic-mgmt
+        docker exec sonic-mgmt python3 -c "import pytest; print('pytest version:', pytest.__version__)"
       displayName: "Setup sonic-mgmt container"
 
     - script: |
