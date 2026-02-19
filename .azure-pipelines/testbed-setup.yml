@@ -85,6 +85,12 @@ jobs:
           echo "--- Disk space ---"
           df -h /data 2>/dev/null || df -h /
 
+          echo "--- Searching for cEOS image ---"
+          find /home -name '*cEOS*' -o -name '*ceos*' 2>/dev/null || true
+          find /data -name '*cEOS*' -o -name '*ceos*' 2>/dev/null || true
+          find /opt -name '*cEOS*' -o -name '*ceos*' 2>/dev/null || true
+          ls -la /home/azureuser/veos-vm/images/ 2>/dev/null || true
+
           echo "##[section]Prerequisites check complete"
         displayName: "Check prerequisites"
 
@@ -191,6 +197,33 @@ jobs:
 
           docker exec sonic-mgmt bash -c "echo 'sonic-mgmt container is running'"
         displayName: "Setup sonic-mgmt container"
+
+      - script: |
+          set -ex
+          echo "##[section]Ensuring cEOS image is available"
+
+          CEOS_EXPECTED=/home/azureuser/veos-vm/images/cEOS64-lab-4.32.5M.tar
+          CEOS_DIR=$(dirname $CEOS_EXPECTED)
+          mkdir -p $CEOS_DIR
+
+          if [ -f "$CEOS_EXPECTED" ]; then
+            echo "cEOS image found at expected path: $CEOS_EXPECTED"
+            ls -lh $CEOS_EXPECTED
+          else
+            echo "cEOS not at expected path, searching filesystem..."
+            FOUND=$(find / -name 'cEOS*' -o -name 'ceos*' 2>/dev/null | head -5)
+            echo "Found: $FOUND"
+            if [ -n "$FOUND" ]; then
+              FIRST=$(echo "$FOUND" | head -1)
+              echo "Copying $FIRST to $CEOS_EXPECTED"
+              cp "$FIRST" "$CEOS_EXPECTED"
+            else
+              echo "##[error]No cEOS image found anywhere on the filesystem."
+              echo "Please upload cEOS64-lab-4.32.5M.tar to $CEOS_EXPECTED"
+              exit 1
+            fi
+          fi
+        displayName: "Ensure cEOS image"
 
       - script: |
           set -x
