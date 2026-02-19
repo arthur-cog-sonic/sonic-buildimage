@@ -164,22 +164,29 @@ stages:
         set -ex
         docker stop sonic-mgmt 2>/dev/null || true
         docker rm sonic-mgmt 2>/dev/null || true
+        MGMT_IMAGE=""
         if docker images --format '{{.Repository}}:{{.Tag}}' | grep -qx 'docker-sonic-mgmt:latest'; then
-          echo "Using existing docker-sonic-mgmt:latest image"
+          MGMT_IMAGE="docker-sonic-mgmt:latest"
+        elif docker images --format '{{.Repository}}:{{.Tag}}' | grep -q 'docker-sonic-mgmt'; then
+          MGMT_IMAGE=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep 'docker-sonic-mgmt' | head -1)
+        fi
+        if [ -n "$MGMT_IMAGE" ]; then
+          echo "Using existing image: $MGMT_IMAGE"
+          if [ "$MGMT_IMAGE" != "docker-sonic-mgmt:latest" ]; then
+            docker tag "$MGMT_IMAGE" docker-sonic-mgmt:latest
+          fi
         else
-          echo "docker-sonic-mgmt:latest not found. Building minimal image..."
+          echo "No docker-sonic-mgmt image found. Building minimal image..."
           docker images
-          cat > /tmp/Dockerfile.sonic-mgmt <<'EOF'
+          mkdir -p /tmp/sonic-mgmt-build
+          cat > /tmp/sonic-mgmt-build/Dockerfile <<'EOF'
         FROM ubuntu:22.04
         ENV DEBIAN_FRONTEND=noninteractive
         RUN apt-get update && apt-get install -y python3 python3-pip python3-venv python-is-python3 ansible sshpass openssh-client curl git jq iproute2 iputils-ping sudo vim net-tools libvirt-clients qemu-utils && rm -rf /var/lib/apt/lists/*
         RUN python3 -m pip install --no-cache-dir pytest pytest-ansible pytest-html pytest-xdist paramiko netmiko netaddr jinja2 PyYAML requests retry natsort tabulate lxml pexpect passlib cryptography allure-pytest defusedxml rpyc redis jsonpatch
         EOF
-          sed -i 's/^[[:space:]]*//' /tmp/Dockerfile.sonic-mgmt
-          echo "=== Dockerfile contents ==="
-          cat /tmp/Dockerfile.sonic-mgmt
-          echo "=== Building ==="
-          docker build -t docker-sonic-mgmt:latest -f /tmp/Dockerfile.sonic-mgmt /tmp/
+          sed -i 's/^[[:space:]]*//' /tmp/sonic-mgmt-build/Dockerfile
+          docker build -t docker-sonic-mgmt:latest /tmp/sonic-mgmt-build/
         fi
         docker run -d --name sonic-mgmt \
           -v /data/sonic-mgmt:/data/sonic-mgmt \
