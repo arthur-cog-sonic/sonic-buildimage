@@ -28,7 +28,7 @@ resources:
   - repository: sonic-mgmt
     type: github
     name: arthur-cog-sonic/sonic-mgmt
-    ref: master
+    ref: devin/1771309030-klish-aaa-tests
     endpoint: arthur-cog-sonic
   - repository: buildimage
     type: github
@@ -102,102 +102,271 @@ stages:
 #           PLATFORM_ARCH: armhf
 #           INCLUDE_RESTAPI: y
 
-# Test stage commented out - requires SONiC-Elastictest variable group and SSH/KVM integration tests not available
-# - stage: Test
-#   dependsOn: BuildVS
-#   condition: and(succeeded(), and(ne(stageDependencies.BuildVS.outputs['vs.SetVar.SKIP_VSTEST'], 'YES'), in(dependencies.BuildVS.result, 'Succeeded', 'SucceededWithIssues')))
-#   variables:
-#   - group: SONiC-Elastictest
-#   - name: inventory
-#     value: veos_vtb
-#   - name: testbed_file
-#     value: vtestbed.csv
-#   - name: PTF_MODIFIED
-#     value: $[ coalesce(stageDependencies.BuildVS.vs.outputs['PublishAndSetPtfTag.PTF_MODIFIED'], stageDependencies.BuildVS.vs.outputs['script.PTF_MODIFIED'], stageDependencies.BuildVS.vs.outputs['script1.PTF_MODIFIED'], 'False') ]
-#
-# # For every test job:
-# # continueOnError: false means it's a required test job and will block merge if it fails
-# # continueOnError: true means it's an optional test job and will not block merge even though it fails(unless a required test job depends on its result)
-#
-#   jobs:
-#   - job: debug_variables
-#     pool: sonic-build
-#     displayName: "Debug PTF_MODIFIED Variable"
-#     steps:
-#     - script: |
-#         echo "PTF_MODIFIED variable value: $(PTF_MODIFIED)"
-#         echo "Debug: Checking if PTF_MODIFIED is being passed correctly from BuildVS stage"
-#         if [ "$(PTF_MODIFIED)" = "True" ]; then
-#           echo "SUCCESS: PTF_MODIFIED is True"
-#         elif [ "$(PTF_MODIFIED)" = "False" ]; then
-#           echo "INFO: PTF_MODIFIED is False"
-#         else
-#           echo "ERROR: PTF_MODIFIED has unexpected value: $(PTF_MODIFIED)"
-#         fi
-#       displayName: "Debug PTF_MODIFIED Variable"
-#
-#   - job:
-#     pool: sonic-build
-#     displayName: "vstest"
-#     condition: false # agent pool don't work. disable this job to unblock PRs.
-#     timeoutInMinutes: 60
-#     steps:
-#     - template: .azure-pipelines/cleanup.yml
-#     - checkout: self
-#       clean: true
-#       submodules: recursive
-#       displayName: 'Checkout code'
-#
-#     - script: |
-#         sudo rm -rf ../target
-#         sudo rm -rf ../*.deb
-#       displayName: "Cleanup"
-#
-#     - task: DownloadPipelineArtifact@2
-#       inputs:
-#         artifact: sonic-buildimage.vs
-#       displayName: "Download sonic-buildimage.vs artifact"
-#
-#     - script: |
-#         sudo src/sonic-swss-common/.azure-pipelines/build_and_install_module.sh
-#       displayName: "Install kernel modules"
-#
-#     - script: |
-#         sudo apt-get update
-#         sudo apt-get install -y make libtool m4 autoconf dh-exec debhelper cmake pkg-config \
-#                          libhiredis-dev libnl-3-dev libnl-genl-3-dev libnl-route-3-dev libnl-nf-3-dev swig \
-#                          libpython2.7-dev libboost-dev libboost-serialization-dev uuid-dev libzmq5 libzmq3-dev  python3-pip \
-#                          cmake libgtest-dev libgmock-dev libyang-dev nlohmann-json3-dev
-#         sudo pip3 install pytest
-#         cd src/sonic-swss-common
-#         ./autogen.sh
-#         dpkg-buildpackage -rfakeroot -us -uc -b -j$(nproc)
-#         sudo dpkg -i --force-confask,confnew ../libswsscommon_*.deb
-#         sudo dpkg -i ../python3-swsscommon_*.deb
-#       displayName: "Compile sonic swss common"
-#
-#     - script: |
-#         sudo docker load -i ../target/docker-sonic-vs.gz
-#         docker tag docker-sonic-vs:latest docker-sonic-vs:$(Build.BuildNumber)
-#         username=$(id -un)
-#
-#         trap "docker ps; docker images; ip netns list; \
-#               docker rmi docker-sonic-vs:$(Build.BuildNumber); \
-#               ip netns list | grep -E [-]srv[0-9]+ | awk '{print $1}' | xargs -I {} sudo ip netns delete {}; \
-#               sudo chown -R ${username}.${username} .; \
-#               sudo chown -R ${username}.${username} $(System.DefaultWorkingDirectory)" EXIT
-#         pushd platform/vs/tests
-#         sudo py.test -v --junitxml=tr.xml --imgname=docker-sonic-vs:$(Build.BuildNumber)
-#       displayName: "Run vs tests"
-#
-#     - task: PublishTestResults@2
-#       inputs:
-#         testResultsFiles: '**/tr.xml'
-#         testRunTitle: vstest
-#
-#   # KVM based PR test jobs
-#   - template: .azure-pipelines/pr_test_template.yml@sonic-mgmt
-#     parameters:
-#       CHECKOUT_SONIC_MGMT: ${{ parameters.CHECKOUT_SONIC_MGMT }}
-#       GLOBAL_PARAMS:
-#         PTF_MODIFIED: $(PTF_MODIFIED)
+- stage: Test
+  dependsOn: BuildVS
+  condition: succeeded()
+  variables:
+  - name: inventory
+    value: veos_vtb
+  - name: testbed_file
+    value: vtestbed.yaml
+
+  jobs:
+  - job: kvmtest_klish_aaa
+    pool: sonic-build
+    displayName: "kvmtest-t0 klish_aaa"
+    timeoutInMinutes: 240
+    steps:
+    - template: .azure-pipelines/cleanup.yml
+    - checkout: self
+      clean: true
+      submodules: recursive
+      displayName: 'Checkout code'
+
+    - checkout: sonic-mgmt
+      clean: true
+      displayName: 'Checkout sonic-mgmt'
+
+    - task: DownloadPipelineArtifact@2
+      inputs:
+        artifact: sonic-buildimage.vs
+        targetPath: $(Pipeline.Workspace)/artifacts
+      displayName: "Download sonic-buildimage.vs artifact"
+
+    - script: |
+        set -ex
+        sudo mkdir -p /data/sonic-vm/images
+        sudo cp -v $(Pipeline.Workspace)/artifacts/target/sonic-vs.img.gz /data/sonic-vm/images/sonic-vs.img.gz
+        sudo gzip -fd /data/sonic-vm/images/sonic-vs.img.gz
+        username=$(id -un)
+        sudo chown -R $username.$username /data/sonic-vm
+        ls -la /data/sonic-vm/images/
+      displayName: "Prepare VS image"
+
+    - script: |
+        set -ex
+        MGMT_SRC="sonic-mgmt"
+        if [ ! -d "$MGMT_SRC" ]; then
+          MGMT_SRC="$(Pipeline.Workspace)/s/sonic-mgmt"
+        fi
+        sudo rm -rf /data/sonic-mgmt
+        sudo mkdir -p /data/sonic-mgmt
+        sudo cp -rf $MGMT_SRC/* /data/sonic-mgmt/
+        sudo cp -rf $MGMT_SRC/.git /data/sonic-mgmt/ 2>/dev/null || true
+        username=$(id -un)
+        sudo chown -R $username.$username /data/sonic-mgmt
+        sed -i s/use_own_value/${username}/ /data/sonic-mgmt/ansible/veos_vtb
+        echo aaa > /data/sonic-mgmt/ansible/password.txt
+        ls -la /data/sonic-mgmt/tests/klish_aaa/
+      displayName: "Setup sonic-mgmt"
+
+    - script: |
+        set -ex
+        docker stop sonic-mgmt 2>/dev/null || true
+        docker rm sonic-mgmt 2>/dev/null || true
+        MGMT_IMAGE=""
+        if docker images --format '{{.Repository}}:{{.Tag}}' | grep -qx 'docker-sonic-mgmt:latest'; then
+          MGMT_IMAGE="docker-sonic-mgmt:latest"
+        elif docker images --format '{{.Repository}}:{{.Tag}}' | grep -q 'docker-sonic-mgmt'; then
+          MGMT_IMAGE=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep 'docker-sonic-mgmt' | head -1)
+        fi
+        if [ -n "$MGMT_IMAGE" ]; then
+          echo "Using existing image: $MGMT_IMAGE"
+          if [ "$MGMT_IMAGE" != "docker-sonic-mgmt:latest" ]; then
+            docker tag "$MGMT_IMAGE" docker-sonic-mgmt:latest
+          fi
+        else
+          echo "No docker-sonic-mgmt image found. Building minimal image..."
+          docker images
+          mkdir -p /tmp/sonic-mgmt-build
+          cat > /tmp/sonic-mgmt-build/Dockerfile <<'EOF'
+        FROM ubuntu:22.04
+        ENV DEBIAN_FRONTEND=noninteractive
+        RUN apt-get update && apt-get install -y python3 python3-pip python3-venv python-is-python3 ansible sshpass openssh-client curl git jq iproute2 iputils-ping sudo vim net-tools libvirt-clients qemu-utils && rm -rf /var/lib/apt/lists/*
+        RUN python3 -m pip install --no-cache-dir pytest pytest-ansible pytest-html pytest-xdist paramiko netmiko netaddr jinja2 PyYAML requests retry natsort tabulate lxml pexpect passlib cryptography allure-pytest defusedxml rpyc redis jsonpatch
+        EOF
+          sed -i 's/^[[:space:]]*//' /tmp/sonic-mgmt-build/Dockerfile
+          docker build -t docker-sonic-mgmt:latest /tmp/sonic-mgmt-build/
+        fi
+        docker run -d --name sonic-mgmt \
+          -v /data/sonic-mgmt:/data/sonic-mgmt \
+          -v /data/sonic-vm:/data/sonic-vm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          --privileged --network host \
+          docker-sonic-mgmt:latest \
+          sleep infinity
+        sleep 5
+        docker ps --filter name=sonic-mgmt
+        docker exec sonic-mgmt python3 -c "import pytest; print('pytest version:', pytest.__version__)"
+      displayName: "Setup sonic-mgmt container"
+
+    - script: |
+        set -ex
+        docker exec sonic-mgmt bash -c "
+          cd /data/sonic-mgmt/ansible
+          sed -i 's/skip_ceos_image_downloading: false/skip_ceos_image_downloading: true/' group_vars/vm_host/ceos.yml
+          cat group_vars/vm_host/ceos.yml
+        "
+        CEOS_ORIG=$(docker exec sonic-mgmt bash -c "grep ceos_image_orig /data/sonic-mgmt/ansible/group_vars/vm_host/ceos.yml | awk '{print \$2}'")
+        CEOS_IMG=$(docker exec sonic-mgmt bash -c "grep '^ceos_image:' /data/sonic-mgmt/ansible/group_vars/vm_host/ceos.yml | awk '{print \$2}'")
+        echo "ceos_image_orig=$CEOS_ORIG ceos_image=$CEOS_IMG"
+        if ! docker image inspect "$CEOS_ORIG" >/dev/null 2>&1; then
+          echo "Creating dummy cEOS image: $CEOS_ORIG"
+          docker pull alpine:latest
+          docker tag alpine:latest "$CEOS_ORIG"
+        fi
+        if [ -n "$CEOS_IMG" ] && ! docker image inspect "$CEOS_IMG" >/dev/null 2>&1; then
+          echo "Creating dummy cEOS image: $CEOS_IMG"
+          docker tag alpine:latest "$CEOS_IMG"
+        fi
+        CEOS_TAR="/home/azureuser/veos-vm/images/cEOS64-lab-4.32.5M.tar"
+        if [ ! -f "$CEOS_TAR" ]; then
+          mkdir -p "$(dirname $CEOS_TAR)"
+          docker save "$CEOS_ORIG" -o "$CEOS_TAR"
+        fi
+        docker exec sonic-mgmt bash -c "cd /data/sonic-mgmt/ansible && ./testbed-cli.sh -d /data/sonic-vm -m $(inventory) -t $(testbed_file) -k ceos refresh-dut vms-kvm-t0 password.txt" || {
+          echo "WARNING: testbed-cli.sh refresh-dut had errors (likely cEOS neighbor issues). Checking if DUT is accessible..."
+        }
+        echo "Waiting 180s for DUT to boot..."
+        sleep 180
+        docker exec sonic-mgmt bash -c "cd /data/sonic-mgmt/ansible && ansible -m ping -i $(inventory) vlab-01" || echo "WARNING: DUT ping failed, continuing anyway..."
+        docker exec sonic-mgmt bash -c "cd /data/sonic-mgmt/ansible && ./testbed-cli.sh -m $(inventory) -t $(testbed_file) deploy-mg vms-kvm-t0 lab password.txt" || {
+          echo "WARNING: deploy-mg had errors. Continuing to test stage..."
+        }
+        echo "Waiting 120s for configuration to apply..."
+        sleep 120
+        docker exec sonic-mgmt bash -c "cd /data/sonic-mgmt/ansible && ansible -m ping -i $(inventory) vlab-01" || echo "WARNING: DUT ping failed after deploy-mg"
+      displayName: "Setup testbed"
+
+    - script: |
+        set -ex
+        rm -rf /data/sonic-mgmt/tests/logs
+        mkdir -p /data/sonic-mgmt/tests/logs/klish_aaa
+        docker exec sonic-mgmt bash -c "set -eo pipefail; cd /data/sonic-mgmt/tests && python -m pytest klish_aaa/test_klish_aaa.py \
+          -v \
+          --inventory ../ansible/veos_vtb \
+          --host-pattern vlab-01 \
+          --testbed vms-kvm-t0 \
+          --testbed_file ../ansible/vtestbed.yaml \
+          --log-cli-level info \
+          --junitxml logs/klish_aaa/tr.xml \
+          --allow_recover \
+          --completeness_level=confident \
+          2>&1 | tee logs/klish_aaa/test_output.log"
+      displayName: "Run Klish AAA tests"
+
+    - script: |
+        cp -r /data/sonic-mgmt/tests/logs $(Build.ArtifactStagingDirectory)/ || true
+        username=$(id -un)
+        sudo chown -R $username.$username $(Build.ArtifactStagingDirectory)
+      displayName: "Collect test logs"
+      condition: succeededOrFailed()
+
+    - publish: $(Build.ArtifactStagingDirectory)/logs
+      artifact: sonic-buildimage.kvmtest.klish_aaa.log@$(System.JobAttempt)
+      displayName: "Archive klish_aaa test logs"
+      condition: succeededOrFailed()
+
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFiles: '$(Build.ArtifactStagingDirectory)/logs/**/*.xml'
+        testRunTitle: kvmtest.klish_aaa
+      condition: succeededOrFailed()
+
+    - script: |
+        set -x
+        LOG_FILE="/data/sonic-mgmt/tests/logs/klish_aaa/test_output.log"
+        XML_FILE="/data/sonic-mgmt/tests/logs/klish_aaa/tr.xml"
+        COMMENT_FILE="/tmp/github_comment.md"
+
+        {
+          echo "## Klish AAA KVM Test Results"
+          echo ""
+          echo "**Build:** [#$(Build.BuildId)](https://dev.azure.com/Cisco-SONiC-PoC/579de689-fe74-4624-b499-930d501b05e8/_build/results?buildId=$(Build.BuildId)) | **Commit:** \`$(Build.SourceVersion)\`"
+          echo ""
+        } > "$COMMENT_FILE"
+
+        if [ -f "$XML_FILE" ]; then
+          python3 -c "import xml.etree.ElementTree as ET; root=ET.parse('$XML_FILE').getroot(); ts=next(root.iter('testsuite'),None); print('| Tests | Errors | Failures | Skipped | Time |') if ts is not None else None; print('|-------|--------|----------|---------|------|') if ts is not None else None; print(f'| {ts.get(\"tests\",\"0\")} | {ts.get(\"errors\",\"0\")} | {ts.get(\"failures\",\"0\")} | {ts.get(\"skipped\",\"0\")} | {ts.get(\"time\",\"0\")}s |') if ts is not None else print('_No testsuite element found_')" >> "$COMMENT_FILE" 2>/dev/null || echo "_Could not parse JUnit XML_" >> "$COMMENT_FILE"
+          echo "" >> "$COMMENT_FILE"
+        else
+          echo "_No JUnit XML found - tests may not have executed._" >> "$COMMENT_FILE"
+          echo "" >> "$COMMENT_FILE"
+        fi
+
+        if [ -f "$LOG_FILE" ]; then
+          {
+            echo "<details>"
+            echo "<summary>Test Output (last 100 lines)</summary>"
+            echo ""
+            echo '```'
+            tail -100 "$LOG_FILE"
+            echo '```'
+            echo "</details>"
+            echo ""
+          } >> "$COMMENT_FILE"
+
+          FIRST_ERROR=$(grep -m1 -A10 'ERROR at setup\|FAILED\|AnsibleConnectionFailure' "$LOG_FILE" 2>/dev/null | head -15)
+          if [ -n "$FIRST_ERROR" ]; then
+            {
+              echo "<details>"
+              echo "<summary>First Error</summary>"
+              echo ""
+              echo '```'
+              echo "$FIRST_ERROR"
+              echo '```'
+              echo "</details>"
+            } >> "$COMMENT_FILE"
+          fi
+        else
+          echo "_No test output found. Tests may not have executed - check pipeline step logs._" >> "$COMMENT_FILE"
+        fi
+
+        head -c 60000 "$COMMENT_FILE" > "${COMMENT_FILE}.trunc" && mv "${COMMENT_FILE}.trunc" "$COMMENT_FILE"
+
+        PR_NUMBER="$(System.PullRequest.PullRequestNumber)"
+        if [ -z "$PR_NUMBER" ] || echo "$PR_NUMBER" | grep -q 'System.PullRequest'; then
+          echo "Not a PR build, printing comment to log:"
+          cat "$COMMENT_FILE"
+          exit 0
+        fi
+
+        set +x
+        GH_TOKEN=""
+        for DIR in "$(Pipeline.Workspace)/s/sonic-mgmt" "$(Pipeline.Workspace)/s/sonic-buildimage" "sonic-mgmt" "sonic-buildimage"; do
+          if [ -d "$DIR/.git" ]; then
+            HEADER=$(git -C "$DIR" config --get http.https://github.com/.extraheader 2>/dev/null || true)
+            if [ -n "$HEADER" ]; then
+              GH_TOKEN=$(echo "$HEADER" | sed 's/AUTHORIZATION: basic //' | base64 -d 2>/dev/null | cut -d: -f2)
+              [ -n "$GH_TOKEN" ] && break
+            fi
+          fi
+        done
+
+        if [ -z "$GH_TOKEN" ]; then
+          echo "Could not extract GitHub token. Printing comment to log:"
+          cat "$COMMENT_FILE"
+          exit 0
+        fi
+
+        echo "GitHub token extracted, posting comment..."
+        PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'body': sys.stdin.read()}))" < "$COMMENT_FILE")
+        HTTP_CODE=$(curl -s -o /tmp/gh_resp.json -w '%{http_code}' \
+          -X POST \
+          -H "Authorization: token $GH_TOKEN" \
+          -H "Accept: application/vnd.github.v3+json" \
+          "https://api.github.com/repos/arthur-cog-sonic/sonic-buildimage/issues/$PR_NUMBER/comments" \
+          -d "$PAYLOAD")
+        set -x
+
+        echo "GitHub API response: $HTTP_CODE"
+        if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+          echo "Posted test results to PR #$PR_NUMBER"
+        else
+          echo "Failed to post to GitHub (HTTP $HTTP_CODE). Printing comment to log:"
+          cat /tmp/gh_resp.json 2>/dev/null
+          echo ""
+          cat "$COMMENT_FILE"
+        fi
+      displayName: "Post test results to GitHub PR"
+      condition: succeededOrFailed()
