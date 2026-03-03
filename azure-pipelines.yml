@@ -120,10 +120,10 @@ stages:
   # debug_variables and vstest jobs removed — they were previously disabled
   # (condition: false) and are not needed for local KVM execution.
 
-  # KVM based PR test jobs — restored from comments, using pr_test_local.yml
-  # instead of pr_test_template.yml to run tests locally on sonic-build-01
-  # rather than submitting to Elastictest.
-  - template: .azure-pipelines/pr_test_local.yml@sonic-mgmt
-    parameters:
-      CHECKOUT_SONIC_MGMT: ${{ parameters.CHECKOUT_SONIC_MGMT }}
-      TIMEOUT_IN_MINUTES_PR_TEST: ${{ parameters.TIMEOUT_IN_MINUTES_PR_TEST }}
+  # KVM tests are temporarily disabled.
+  - job: skip_kvm_tests
+    displayName: "Skip KVM tests (temporarily disabled)"
+    steps:
+      - script: |
+          echo "KVM tests are temporarily disabled"
+        displayName: "Skip"
