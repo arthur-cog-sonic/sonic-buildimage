@@ -72,23 +72,53 @@ def make_url(base: str, path: str, query: str) -> str:
     return f"{base.rstrip('/')}/{path}?{query}"
 
 
-def build_project_api_base(collection_uri: str, project_name: str, project_id: str) -> str:
-    """
-    Build a reliable project-scoped API base URL.
-
-    In some hosted agents SYSTEM_COLLECTIONURI can already include a project
-    segment (name or GUID). If so, avoid appending project again.
-    """
+def build_project_api_bases(collection_uri: str, project_name: str, project_id: str) -> List[str]:
+    """Build candidate project-scoped API bases to handle environment differences."""
     base = collection_uri.rstrip("/")
-    lowered = base.lower()
-    project_name_l = project_name.lower()
-    project_id_l = project_id.lower()
+    candidates = [
+        base,
+        f"{base}/{project_name.strip()}",
+    ]
+    if project_id and project_id.strip():
+        candidates.append(f"{base}/{project_id.strip()}")
 
-    if lowered.endswith(f"/{project_name_l}") or (project_id and lowered.endswith(f"/{project_id_l}")):
-        return base
+    unique: List[str] = []
+    seen = set()
+    for item in candidates:
+        key = item.lower().rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item.rstrip("/"))
+    return unique
 
-    project_segment = project_id.strip() or project_name.strip()
-    return f"{base}/{project_segment}"
+
+def resolve_timeline(
+    api_bases: List[str], build_id: str, ado_token: str
+) -> Tuple[str, Dict[str, Any]]:
+    last_err: Optional[Exception] = None
+    for base in api_bases:
+        timeline_url = make_url(
+            base,
+            f"_apis/build/builds/{build_id}/timeline",
+            f"api-version={TIMELINE_API_VERSION}",
+        )
+        try:
+            timeline = http_json(timeline_url, ado_token)
+            return base, timeline
+        except urllib.error.HTTPError as err:
+            # Try the next URL shape for 404s.
+            if err.code == 404:
+                last_err = err
+                continue
+            raise
+        except Exception as err:
+            last_err = err
+            continue
+
+    if last_err:
+        raise RuntimeError(f"Unable to fetch timeline from any API base: {last_err}")
+    raise RuntimeError("Unable to fetch timeline from any API base.")
 
 
 def http_json(
@@ -163,19 +193,13 @@ def extract_excerpt_lines(log_text: str, max_lines: int) -> List[Tuple[int, str]
 
 
 def fetch_failed_tasks(
-    project_api_base: str,
-    project: str,
+    api_bases: List[str],
     build_id: str,
     ado_token: str,
     max_tasks: int,
     max_lines_per_task: int,
 ) -> List[FailedTask]:
-    timeline_url = make_url(
-        project_api_base,
-        f"_apis/build/builds/{build_id}/timeline",
-        f"api-version={TIMELINE_API_VERSION}",
-    )
-    timeline = http_json(timeline_url, ado_token)
+    project_api_base, timeline = resolve_timeline(api_bases, build_id, ado_token)
     records = timeline.get("records", [])
 
     by_id = {r.get("id"): r for r in records if r.get("id")}
@@ -462,26 +486,35 @@ def main() -> int:
         "repo": repo,
     }
 
-    project_api_base = build_project_api_base(collection_uri, project, project_id)
-
-    failed_tasks = fetch_failed_tasks(
-        project_api_base=project_api_base,
-        project=project,
-        build_id=build_id,
-        ado_token=ado_token,
-        max_tasks=args.max_failed_tasks,
-        max_lines_per_task=args.max_lines_per_task,
-    )
+    api_bases = build_project_api_bases(collection_uri, project, project_id)
+    fetch_error = ""
+    try:
+        failed_tasks = fetch_failed_tasks(
+            api_bases=api_bases,
+            build_id=build_id,
+            ado_token=ado_token,
+            max_tasks=args.max_failed_tasks,
+            max_lines_per_task=args.max_lines_per_task,
+        )
+    except Exception as err:
+        failed_tasks = []
+        fetch_error = str(err)
 
     llm_prompt = build_llm_prompt(meta, failed_tasks)
     openai_key = env("OPENAI_API_KEY").strip()
-    if openai_key:
+    if openai_key and not fetch_error:
         try:
             triage_markdown = run_codex_triage(args.model, openai_key, llm_prompt)
         except Exception as err:
             triage_markdown = (
                 f"## Summary\nCodex triage failed: `{err}`\n\n" + fallback_triage(failed_tasks)
             )
+    elif fetch_error:
+        triage_markdown = (
+            "## Summary\nFailed to fetch Azure DevOps failure timeline; generated fallback triage only.\n\n"
+            f"Fetch error: `{truncate(fetch_error, 500)}`\n\n"
+            + fallback_triage(failed_tasks)
+        )
     else:
         triage_markdown = (
             "## Summary\nOPENAI_API_KEY is not configured; generated fallback triage only.\n\n"
