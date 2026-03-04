@@ -127,3 +127,42 @@ stages:
       - script: |
           echo "KVM tests are temporarily disabled"
         displayName: "Skip"
+
+- stage: FailureTriage
+  displayName: "Codex failure triage"
+  dependsOn:
+    - BuildVS
+    - Test
+  condition: and(always(), or(eq(dependencies.BuildVS.result, 'Failed'), eq(dependencies.Test.result, 'Failed')))
+  pool: sonic-build
+  jobs:
+  - job: codex_failure_triage
+    displayName: "Generate triage report and post GitHub comment"
+    timeoutInMinutes: 30
+    steps:
+    - checkout: self
+      clean: true
+      submodules: false
+      displayName: "Checkout code"
+
+    - script: |
+        python3 -m pip install --upgrade pip
+        python3 -m pip install openai
+      displayName: "Install Codex SDK dependency"
+
+    - script: |
+        mkdir -p "$(Build.ArtifactStagingDirectory)/triage"
+        python3 .azure-pipelines/tools/ci_failure_triage.py \
+          --output "$(Build.ArtifactStagingDirectory)/triage/triage-report.md" \
+          --post-github-comment
+      env:
+        ADO_ACCESS_TOKEN: $(System.AccessToken)
+        OPENAI_API_KEY: $(OPENAI_API_KEY)
+        GITHUB_TOKEN: $(GITHUB_TOKEN)
+      continueOnError: true
+      displayName: "Generate markdown triage and post GitHub comment"
+
+    - publish: $(Build.ArtifactStagingDirectory)/triage
+      artifact: sonic-buildimage.failure-triage
+      condition: always()
+      displayName: "Publish triage artifact"
