@@ -65,6 +65,62 @@ stages:
   - template: .azure-pipelines/azure-pipelines-build.yml
     parameters:
       buildOptions: 'USERNAME=admin SONIC_BUILD_JOBS=$(nproc) BUILD_MULTIASIC_KVM=y INCLUDE_DHCP_SERVER=y ${{ variables.VERSION_CONTROL_OPTIONS }}'
+      preSteps:
+      - bash: |
+          set -euo pipefail
+          echo "Starting controlled complex failure simulation for triage."
+          python3 - <<'PY'
+          import json
+          import sys
+          import traceback
+
+          class DependencyResolutionError(RuntimeError):
+              pass
+
+          class ManifestValidationError(RuntimeError):
+              pass
+
+          def load_component_manifest(path: str) -> dict:
+              # Simulate real-world manifest read failure.
+              raise FileNotFoundError(f"Manifest not found: {path}")
+
+          def resolve_dependency_graph(manifest: dict) -> None:
+              cycle = [
+                  "target/docker-sonic-vs.gz",
+                  "target/python-wheels/bookworm/sonic_yang_models-1.0-py3-none-any.whl.flags",
+                  "target/docker-sonic-vs.gz",
+              ]
+              raise DependencyResolutionError(
+                  "Dependency graph contains a cycle: " + " -> ".join(cycle)
+              )
+
+          def main() -> None:
+              try:
+                  manifest = load_component_manifest("files/build/manifests/vs.json")
+                  resolve_dependency_graph(manifest)
+              except FileNotFoundError as exc:
+                  raise ManifestValidationError(
+                      "Build manifest validation failed during pre-build checks"
+                  ) from exc
+
+          try:
+              main()
+          except Exception:
+              print("##[error]Pre-build dependency validation failed with nested exceptions.")
+              print("##[error]Context: platform=vs env=bookworm stage=BuildVS")
+              print("##[error]Suggested first check: restore files/build/manifests/vs.json")
+              traceback.print_exc()
+              payload = {
+                  "triage_hint": "Manifest missing, dependency graph unresolved",
+                  "owner": "buildimage",
+                  "severity": "high",
+                  "component": "BuildVS-precheck",
+              }
+              print("Diagnostic payload:")
+              print(json.dumps(payload, indent=2))
+              sys.exit(42)
+          PY
+        displayName: "Inject complex failure (manifest + dependency graph)"
       jobGroups:
       - name: vs
 
