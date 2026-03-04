@@ -72,6 +72,25 @@ def make_url(base: str, path: str, query: str) -> str:
     return f"{base.rstrip('/')}/{path}?{query}"
 
 
+def build_project_api_base(collection_uri: str, project_name: str, project_id: str) -> str:
+    """
+    Build a reliable project-scoped API base URL.
+
+    In some hosted agents SYSTEM_COLLECTIONURI can already include a project
+    segment (name or GUID). If so, avoid appending project again.
+    """
+    base = collection_uri.rstrip("/")
+    lowered = base.lower()
+    project_name_l = project_name.lower()
+    project_id_l = project_id.lower()
+
+    if lowered.endswith(f"/{project_name_l}") or (project_id and lowered.endswith(f"/{project_id_l}")):
+        return base
+
+    project_segment = project_id.strip() or project_name.strip()
+    return f"{base}/{project_segment}"
+
+
 def http_json(
     url: str,
     token: str,
@@ -144,7 +163,7 @@ def extract_excerpt_lines(log_text: str, max_lines: int) -> List[Tuple[int, str]
 
 
 def fetch_failed_tasks(
-    collection_uri: str,
+    project_api_base: str,
     project: str,
     build_id: str,
     ado_token: str,
@@ -152,7 +171,7 @@ def fetch_failed_tasks(
     max_lines_per_task: int,
 ) -> List[FailedTask]:
     timeline_url = make_url(
-        f"{collection_uri.rstrip('/')}/{project}",
+        project_api_base,
         f"_apis/build/builds/{build_id}/timeline",
         f"api-version={TIMELINE_API_VERSION}",
     )
@@ -176,7 +195,7 @@ def fetch_failed_tasks(
             parent_name = by_id[parent_id].get("name", "")
 
         log_url = make_url(
-            f"{collection_uri.rstrip('/')}/{project}",
+            project_api_base,
             f"_apis/build/builds/{build_id}/logs/{log_id}",
             f"api-version={LOG_API_VERSION}",
         )
@@ -425,6 +444,7 @@ def main() -> int:
 
     collection_uri = require_env("SYSTEM_COLLECTIONURI")
     project = require_env("SYSTEM_TEAMPROJECT")
+    project_id = env("SYSTEM_TEAMPROJECTID")
     build_id = require_env("BUILD_BUILDID")
     build_number = require_env("BUILD_BUILDNUMBER")
     definition_name = require_env("BUILD_DEFINITIONNAME")
@@ -442,8 +462,10 @@ def main() -> int:
         "repo": repo,
     }
 
+    project_api_base = build_project_api_base(collection_uri, project, project_id)
+
     failed_tasks = fetch_failed_tasks(
-        collection_uri=collection_uri,
+        project_api_base=project_api_base,
         project=project,
         build_id=build_id,
         ado_token=ado_token,
