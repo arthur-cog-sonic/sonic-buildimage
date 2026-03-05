@@ -312,7 +312,7 @@ def run_codex_triage(model: str, api_key: str, prompt: str) -> str:
                 "role": "system",
                 "content": [
                     {
-                        "type": "text",
+                        "type": "input_text",
                         "text": (
                             "You are a CI incident triage assistant for SONiC build pipelines.\n"
                             "Return markdown with these sections in order:\n"
@@ -326,7 +326,7 @@ def run_codex_triage(model: str, api_key: str, prompt: str) -> str:
                     }
                 ],
             },
-            {"role": "user", "content": [{"type": "text", "text": prompt}]},
+            {"role": "user", "content": [{"type": "input_text", "text": prompt}]},
         ],
     )
 
