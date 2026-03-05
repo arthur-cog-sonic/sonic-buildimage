@@ -37,8 +37,8 @@ except Exception:  # pragma: no cover
     OpenAI = None
 
 
-TIMELINE_API_VERSION = "7.1-preview.1"
-LOG_API_VERSION = "7.1-preview.2"
+TIMELINE_API_VERSION = "7.1"
+LOG_API_VERSION = "7.1"
 GITHUB_API_VERSION = "2022-11-28"
 DEFAULT_MODEL = "gpt-5-mini"
 
@@ -96,28 +96,38 @@ def build_project_api_bases(collection_uri: str, project_name: str, project_id: 
 def resolve_timeline(
     api_bases: List[str], build_id: str, ado_token: str
 ) -> Tuple[str, Dict[str, Any]]:
+    timeline_paths = [
+        f"_apis/build/builds/{build_id}/Timeline",
+        f"_apis/build/builds/{build_id}/timeline",
+    ]
     last_err: Optional[Exception] = None
+    attempts: List[str] = []
     for base in api_bases:
-        timeline_url = make_url(
-            base,
-            f"_apis/build/builds/{build_id}/timeline",
-            f"api-version={TIMELINE_API_VERSION}",
-        )
-        try:
-            timeline = http_json(timeline_url, ado_token)
-            return base, timeline
-        except urllib.error.HTTPError as err:
-            # Try the next URL shape for 404s.
-            if err.code == 404:
+        for timeline_path in timeline_paths:
+            timeline_url = make_url(
+                base,
+                timeline_path,
+                f"api-version={TIMELINE_API_VERSION}",
+            )
+            attempts.append(timeline_url)
+            try:
+                timeline = http_json(timeline_url, ado_token)
+                return base, timeline
+            except urllib.error.HTTPError as err:
+                # Try the next URL shape for 404s.
+                if err.code == 404:
+                    last_err = RuntimeError(f"HTTP 404 at {timeline_url}")
+                    continue
+                raise
+            except Exception as err:
                 last_err = err
                 continue
-            raise
-        except Exception as err:
-            last_err = err
-            continue
 
     if last_err:
-        raise RuntimeError(f"Unable to fetch timeline from any API base: {last_err}")
+        raise RuntimeError(
+            "Unable to fetch timeline from any API base. "
+            f"Last error: {last_err}. Tried URLs: {' | '.join(attempts)}"
+        )
     raise RuntimeError("Unable to fetch timeline from any API base.")
 
 
