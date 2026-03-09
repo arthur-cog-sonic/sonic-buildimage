@@ -41,8 +41,8 @@ typedef struct pac_authenticated_clients_oper_table_s
   uint32                 terminationAction;
   authmgrVlanType_t         vlanType;     /* assigned vlan category */
   uint32                 vlanId;
-  uint32                 sessionTime;
-  uint32                 lastAuthTime;
+  uint64                 sessionTime;  /* Y2038-safe: changed from uint32 */
+  uint64                 lastAuthTime;  /* Y2038-safe: changed from uint32 */
    USER_MGR_AUTH_METHOD_t backend_auth_method;
 
 }pac_authenticated_clients_oper_table_t;
