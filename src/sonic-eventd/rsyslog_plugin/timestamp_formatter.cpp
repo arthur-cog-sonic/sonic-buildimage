@@ -37,10 +37,13 @@ string TimestampFormatter::getYear(string timestamp) {
         }
     }
     // no last timestamp or year change
+    // Use thread-safe localtime_r instead of localtime
+    // On 64-bit systems, time_t is already 64-bit and Y2038-safe
     time_t currentTime = time(nullptr);
-    tm* const localTime = localtime(&currentTime);
+    struct tm tm_result;
+    localtime_r(&currentTime, &tm_result);
     stringstream ss;
-    auto currentYear = 1900 + localTime->tm_year;
+    auto currentYear = 1900 + tm_result.tm_year;
     ss << currentYear; // get current year
     string year = ss.str();
     m_storedTimestamp = timestamp;
