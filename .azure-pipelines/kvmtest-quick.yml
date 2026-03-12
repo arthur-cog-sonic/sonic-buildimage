@@ -1,0 +1,401 @@
+# Quick KVM Test Pipeline for sonic-mgmt
+#
+# Runs KVM tests without rebuilding docker-sonic-mgmt or the VS image.
+# Uses a cached docker-sonic-mgmt image on the self-hosted agent and
+# downloads the VS image artifact from the latest successful build.
+#
+# Trigger modes:
+#   1. Manual: Queue the pipeline from ADO with parameters
+#   2. PR validation: Add this pipeline as a "Build Validation" policy
+#      on the sonic-mgmt repo in ADO project settings. When a PR is
+#      opened against sonic-mgmt, ADO will automatically queue this pipeline.
+#
+# ADO Setup (one-time):
+#   1. Create a new pipeline in the SONiC project pointing to this YAML
+#      file in the sonic-buildimage repo.
+#   2. To enable PR triggers for sonic-mgmt:
+#      - Go to Project Settings > Repos > sonic-mgmt > Branch Policies > master
+#      - Add a Build Validation policy referencing this pipeline
+#   3. Ensure the sonic-build agent pool has the sonic-build-01 agent online.
+
+trigger: none
+pr: none
+
+name: $(TeamProject)_KVMTest_$(SourceBranchName)_$(Date:yyyyMMdd)$(Rev:.r)
+
+resources:
+  repositories:
+  - repository: sonic-mgmt
+    type: github
+    name: arthur-cog-sonic/sonic-mgmt
+    ref: master
+    endpoint: arthur-cog-sonic
+  - repository: buildimage
+    type: github
+    name: arthur-cog-sonic/sonic-buildimage
+    endpoint: arthur-cog-sonic
+    ref: master
+
+parameters:
+- name: TOPOLOGY
+  type: string
+  default: 't0'
+  values:
+  - t0
+  - t1-lag
+  - dualtor
+  - t2
+  - multi-asic-t1-lag
+  - t0-sonic
+
+- name: TEST_SECTION
+  type: string
+  default: ' '
+  values:
+  - ' '
+  - part-1
+  - part-2
+
+- name: MGMT_BRANCH
+  type: string
+  default: 'master'
+
+- name: VS_IMAGE_URL
+  displayName: 'URL to sonic-vs.img.gz (leave empty to use latest build artifact)'
+  type: string
+  default: ' '
+
+- name: SCRIPTS
+  displayName: 'Specific test scripts to run (space-separated, leave empty for full suite)'
+  type: string
+  default: ' '
+
+- name: STOP_ON_FAILURE
+  type: string
+  default: 'True'
+  values:
+  - 'True'
+  - 'False'
+
+- name: FORCE_REBUILD_MGMT
+  displayName: 'Force rebuild docker-sonic-mgmt image (ignores cache)'
+  type: boolean
+  default: false
+
+- name: NUM_ASIC
+  type: string
+  default: '1'
+
+- name: MGMT_IMAGE_SOURCE
+  displayName: 'docker-sonic-mgmt image source'
+  type: string
+  default: 'cache'
+  values:
+  - cache
+  - build
+
+variables:
+- name: SONIC_MGMT_DIR
+  value: /data/sonic-mgmt
+- name: SONIC_VM_DIR
+  value: /data/sonic-vm
+- name: MGMT_CACHE_DIR
+  value: /data/cache
+- name: INVENTORY
+  value: veos_vtb
+- name: TESTBED_FILE
+  value: vtestbed.yaml
+
+pool: sonic-build
+
+jobs:
+- job: KVMTest
+  displayName: "Quick KVM Test (${{ parameters.TOPOLOGY }})"
+  timeoutInMinutes: 360
+  steps:
+
+  # ---------- Stage 1: Ensure docker-sonic-mgmt image is available ----------
+
+  - checkout: self
+    clean: true
+    displayName: 'Checkout sonic-buildimage'
+
+  - checkout: sonic-mgmt
+    clean: true
+    fetchDepth: 0
+    displayName: 'Checkout sonic-mgmt'
+
+  - script: |
+      set -ex
+
+      FORCE_REBUILD="${{ parameters.FORCE_REBUILD_MGMT }}"
+      IMAGE_EXISTS="false"
+      CACHE_FILE="$(MGMT_CACHE_DIR)/docker-sonic-mgmt.gz"
+
+      if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^docker-sonic-mgmt:latest$"; then
+        IMAGE_EXISTS="true"
+        echo "##[section]docker-sonic-mgmt:latest found in local Docker cache"
+      fi
+
+      if [ "$IMAGE_EXISTS" = "true" ] && [ "$FORCE_REBUILD" = "False" ]; then
+        echo "Using cached docker-sonic-mgmt image. Skipping build."
+        docker images | grep sonic-mgmt || true
+        exit 0
+      fi
+
+      echo "##[section]docker-sonic-mgmt not cached or force rebuild requested"
+
+      # Try loading from saved tarball cache
+      if [ -f "$CACHE_FILE" ] && [ "$FORCE_REBUILD" = "False" ]; then
+        echo "Loading docker-sonic-mgmt from cache file: $CACHE_FILE"
+        docker load -i "$CACHE_FILE"
+        docker images | grep sonic-mgmt || true
+        exit 0
+      fi
+
+      echo "##[warning]No cached image found. Building docker-sonic-mgmt from source (this will take a while on first run)..."
+      echo "Subsequent runs will use the cached image and skip this step."
+
+      cd $(Build.SourcesDirectory)/sonic-buildimage
+
+      git submodule update --init --recursive -- \
+        src/sonic-platform-daemons \
+        src/sonic-genl-packet \
+        src/sonic-sairedis \
+        src/ptf \
+        src/sonic-device-data \
+        src/sonic-dash-api
+
+      make NOBUSTER=1 NOBULLSEYE=1 SONIC_BUILD_JOBS=$(nproc) \
+        DEFAULT_CONTAINER_REGISTRY=publicmirror.azurecr.io \
+        ENABLE_DOCKER_BASE_PULL=y configure PLATFORM=generic DOCKER_BUILDKIT=0
+
+      make -f Makefile.work BLDENV=bookworm SONIC_BUILD_JOBS=$(nproc) \
+        DEFAULT_CONTAINER_REGISTRY=publicmirror.azurecr.io \
+        ENABLE_DOCKER_BASE_PULL=y target/docker-sonic-mgmt.gz
+
+      docker load -i target/docker-sonic-mgmt.gz
+
+      # Save to cache for future runs
+      sudo mkdir -p $(MGMT_CACHE_DIR)
+      sudo cp target/docker-sonic-mgmt.gz "$CACHE_FILE"
+      echo "##[section]Cached docker-sonic-mgmt.gz to $CACHE_FILE for future runs"
+
+      docker images | grep sonic-mgmt || true
+    displayName: 'Ensure docker-sonic-mgmt image (cached)'
+
+  # ---------- Stage 2: Prepare VS image ----------
+
+  - script: |
+      set -ex
+
+      VS_IMAGE_URL="${{ parameters.VS_IMAGE_URL }}"
+      VS_IMAGE_URL=$(echo "$VS_IMAGE_URL" | xargs)  # trim whitespace
+
+      sudo mkdir -p $(SONIC_VM_DIR)/images
+
+      IMAGE_FILE="sonic-vs.img.gz"
+      if [ "${{ parameters.NUM_ASIC }}" -gt 1 ] 2>/dev/null; then
+        IMAGE_FILE="sonic-${{ parameters.NUM_ASIC }}asic-vs.img.gz"
+      fi
+
+      if [ -n "$VS_IMAGE_URL" ]; then
+        echo "Downloading VS image from URL: $VS_IMAGE_URL"
+        sudo wget -O $(SONIC_VM_DIR)/images/sonic-vs.img.gz "$VS_IMAGE_URL"
+      elif [ -f "$(SONIC_VM_DIR)/images/sonic-vs.img" ]; then
+        echo "##[section]VS image already present at $(SONIC_VM_DIR)/images/sonic-vs.img, reusing"
+        exit 0
+      else
+        echo "##[error]No VS image URL provided and no cached VS image found."
+        echo "Please provide a VS_IMAGE_URL parameter or ensure a VS image exists on the agent."
+        echo "You can get a VS image URL from a successful BuildVS pipeline run artifact."
+        exit 1
+      fi
+
+      sudo gzip -fd $(SONIC_VM_DIR)/images/sonic-vs.img.gz
+
+      username=$(id -un)
+      sudo chown -R $username.$username $(SONIC_VM_DIR)
+    displayName: 'Prepare VS image'
+
+  # ---------- Stage 3: Setup sonic-mgmt container and testbed ----------
+
+  - script: |
+      set -ex
+
+      username=$(id -un)
+
+      # Copy sonic-mgmt checkout to /data/sonic-mgmt
+      sudo rm -rf $(SONIC_MGMT_DIR)
+      sudo mkdir -p $(SONIC_MGMT_DIR)
+      sudo cp -rf $(Build.SourcesDirectory)/sonic-mgmt/* $(SONIC_MGMT_DIR)/
+      sudo cp -rf $(Build.SourcesDirectory)/sonic-mgmt/.* $(SONIC_MGMT_DIR)/ 2>/dev/null || true
+      sudo chown -R $username.$username $(SONIC_MGMT_DIR)
+
+      # Remove old sonic-mgmt container if it exists
+      docker rm -f sonic-mgmt 2>/dev/null || true
+
+      # Setup sonic-mgmt container using the repo's setup script
+      cd $(SONIC_MGMT_DIR)
+      ./setup-container.sh -n sonic-mgmt -d /data -i docker-sonic-mgmt -v
+
+      # Verify container is running
+      docker exec sonic-mgmt bash -c "echo 'sonic-mgmt container is running' && which pytest && python3 --version"
+    displayName: 'Setup sonic-mgmt container'
+
+  - script: |
+      set -x
+
+      TBNAME=vms-kvm-t0
+      DUT=vlab-01
+
+      case "${{ parameters.TOPOLOGY }}" in
+        t0)
+          TBNAME=vms-kvm-t0
+          DUT=vlab-01
+          ;;
+        t0-sonic)
+          TBNAME=vms-kvm-t0
+          DUT=vlab-01
+          ;;
+        t1-lag)
+          TBNAME=vms-kvm-t1-lag
+          DUT=vlab-01
+          ;;
+        dualtor)
+          TBNAME=vms-kvm-dual-t0
+          DUT=vlab-01
+          ;;
+        t2)
+          TBNAME=vms-kvm-t2
+          DUT=vlab-01
+          ;;
+        multi-asic-t1-lag)
+          TBNAME=vms-kvm-four-asic-t1-lag
+          DUT=vlab-01
+          ;;
+      esac
+
+      pushd $(SONIC_MGMT_DIR)
+      username=$(id -un)
+      sed -i s/use_own_value/${username}/ ansible/$(INVENTORY)
+      echo aaa > ansible/password.txt
+
+      # Refresh DUT
+      docker exec sonic-mgmt bash -c \
+        "pushd /data/sonic-mgmt/ansible && \
+         ./testbed-cli.sh -d /data/sonic-vm -m $(INVENTORY) -t $(TESTBED_FILE) -k ceos refresh-dut $TBNAME password.txt"
+
+      sleep 120
+
+      # Deploy minigraph
+      docker exec sonic-mgmt bash -c \
+        "pushd /data/sonic-mgmt/ansible && \
+         ./testbed-cli.sh -m $(INVENTORY) -t $(TESTBED_FILE) deploy-mg $TBNAME lab password.txt"
+
+      sleep 180
+      popd
+    displayName: 'Setup KVM testbed'
+
+  # ---------- Stage 4: Run KVM tests ----------
+
+  - script: |
+      set -x
+
+      TBNAME=vms-kvm-t0
+      DUT=vlab-01
+      SECTION="${{ parameters.TEST_SECTION }}"
+      SECTION=$(echo "$SECTION" | xargs)
+      SCRIPTS="${{ parameters.SCRIPTS }}"
+      SCRIPTS=$(echo "$SCRIPTS" | xargs)
+
+      case "${{ parameters.TOPOLOGY }}" in
+        t0)           TBNAME=vms-kvm-t0;                DUT=vlab-01 ;;
+        t0-sonic)     TBNAME=vms-kvm-t0;                DUT=vlab-01 ;;
+        t1-lag)       TBNAME=vms-kvm-t1-lag;            DUT=vlab-01 ;;
+        dualtor)      TBNAME=vms-kvm-dual-t0;           DUT=vlab-01 ;;
+        t2)           TBNAME=vms-kvm-t2;                DUT=vlab-01 ;;
+        multi-asic-t1-lag) TBNAME=vms-kvm-four-asic-t1-lag; DUT=vlab-01 ;;
+      esac
+
+      TEST_SUITE="${{ parameters.TOPOLOGY }}"
+
+      if [ -n "$SCRIPTS" ]; then
+        echo "##[section]Running specific test scripts: $SCRIPTS"
+        docker exec sonic-mgmt bash -c \
+          "cd /data/sonic-mgmt/tests && \
+           ./run_tests.sh \
+             -i ../ansible/$(INVENTORY) \
+             -d $DUT \
+             -n $TBNAME \
+             -f $(TESTBED_FILE) \
+             -k debug \
+             -l warning \
+             -m individual \
+             -q 1 \
+             -a False \
+             -O \
+             -r \
+             -c '$SCRIPTS' \
+             -p logs/custom"
+      else
+        echo "##[section]Running full $TEST_SUITE test suite"
+        KVMTEST_OPTS="-en"
+        if [ "${{ parameters.STOP_ON_FAILURE }}" = "False" ]; then
+          KVMTEST_OPTS="-n"
+        fi
+        docker exec sonic-mgmt bash -c \
+          "/data/sonic-mgmt/tests/kvmtest.sh $KVMTEST_OPTS -T $TEST_SUITE $TBNAME $DUT $SECTION"
+      fi
+    displayName: 'Run KVM tests'
+
+  # ---------- Stage 5: Collect results ----------
+
+  - script: |
+      set -x
+
+      # Collect KVM dump on failure
+      virsh_version=$(virsh --version 2>/dev/null || echo "0")
+      DUT=vlab-01
+      if [ "$virsh_version" != "0" ]; then
+        mkdir -p $(Build.ArtifactStagingDirectory)/kvmdump
+        virsh -c qemu:///system list 2>/dev/null || true
+        virsh -c qemu:///system save $DUT $(Build.ArtifactStagingDirectory)/kvmdump/$DUT.memdmp 2>/dev/null || true
+        virsh -c qemu:///system dumpxml $DUT > $(Build.ArtifactStagingDirectory)/kvmdump/$DUT.xml 2>/dev/null || true
+        img=$(virsh -c qemu:///system domblklist $DUT 2>/dev/null | grep vda | awk '{print $2}')
+        if [ -n "$img" ]; then
+          cp $img $(Build.ArtifactStagingDirectory)/kvmdump/$DUT.img 2>/dev/null || true
+          gzip $(Build.ArtifactStagingDirectory)/kvmdump/$DUT.img 2>/dev/null || true
+        fi
+        sudo gzip $(Build.ArtifactStagingDirectory)/kvmdump/$DUT.memdmp 2>/dev/null || true
+        virsh -c qemu:///system undefine $DUT 2>/dev/null || true
+      fi
+    displayName: 'Collect KVM dump'
+    condition: failed()
+
+  - script: |
+      set -x
+
+      mkdir -p $(Build.ArtifactStagingDirectory)/logs
+      cp -r $(SONIC_MGMT_DIR)/tests/logs/* $(Build.ArtifactStagingDirectory)/logs/ 2>/dev/null || true
+
+      username=$(id -un)
+      sudo chown -R $username.$username $(Build.ArtifactStagingDirectory)
+    displayName: 'Collect test logs'
+    condition: succeededOrFailed()
+
+  - publish: $(Build.ArtifactStagingDirectory)/kvmdump
+    artifact: kvmtest.${{ parameters.TOPOLOGY }}.memdump@$(System.JobAttempt)
+    displayName: 'Archive KVM memdump'
+    condition: failed()
+
+  - publish: $(Build.ArtifactStagingDirectory)/logs
+    artifact: kvmtest.${{ parameters.TOPOLOGY }}.logs@$(System.JobAttempt)
+    displayName: 'Archive KVM test logs'
+    condition: succeededOrFailed()
+
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFiles: '$(Build.ArtifactStagingDirectory)/logs/**/*.xml'
+      testRunTitle: kvmtest.${{ parameters.TOPOLOGY }}
+    condition: succeededOrFailed()
