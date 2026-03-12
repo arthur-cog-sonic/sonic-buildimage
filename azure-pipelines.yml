@@ -68,6 +68,345 @@ stages:
       jobGroups:
       - name: vs
 
+- stage: Test
+  dependsOn: BuildVS
+  condition: and(succeeded(), in(dependencies.BuildVS.result, 'Succeeded', 'SucceededWithIssues'))
+  variables:
+  - name: inventory
+    value: veos_vtb
+  - name: testbed_file
+    value: vtestbed.yaml
+
+  jobs:
+  - job: kvmtest_t0
+    pool: sonic-build
+    displayName: "kvmtest-t0"
+    timeoutInMinutes: 360
+    steps:
+    - checkout: self
+      clean: true
+      displayName: 'Checkout code'
+
+    - script: |
+        mkdir -p $(Build.ArtifactStagingDirectory)/logs
+      displayName: "Create logs directory"
+
+    - script: |
+        set -x
+        LOG="$(Build.ArtifactStagingDirectory)/logs/diagnostics.log"
+        exec > >(tee -a "$LOG") 2>&1
+        echo "=== Environment diagnostics ==="
+        echo "Pipeline.Workspace: $(Pipeline.Workspace)"
+        echo "Build.ArtifactStagingDirectory: $(Build.ArtifactStagingDirectory)"
+        echo "System.DefaultWorkingDirectory: $(System.DefaultWorkingDirectory)"
+        echo "Agent.BuildDirectory: $(Agent.BuildDirectory)"
+        echo "PWD: $(pwd)"
+        echo "whoami: $(whoami)"
+        echo "=== Check KVM ==="
+        ls -la /dev/kvm 2>/dev/null || echo "FAIL: /dev/kvm not found"
+        echo "=== Check libvirt ==="
+        virsh --version 2>/dev/null || echo "FAIL: virsh not found"
+        virsh -c qemu:///system list 2>/dev/null || echo "FAIL: cannot connect to libvirt"
+        echo "=== Check sonic-mgmt directory ==="
+        ls -la /data/sonic-mgmt 2>/dev/null || echo "FAIL: /data/sonic-mgmt not found"
+        ls /data/sonic-mgmt/tests/kvmtest.sh 2>/dev/null || echo "FAIL: kvmtest.sh not found"
+        echo "=== Check sonic-mgmt docker container ==="
+        docker ps -a --filter name=sonic-mgmt 2>/dev/null || echo "FAIL: docker not available"
+        docker exec sonic-mgmt echo "sonic-mgmt container is running" 2>/dev/null || echo "FAIL: sonic-mgmt container not running or not accessible"
+        echo "=== Check /data contents ==="
+        ls -la /data/ 2>/dev/null || echo "FAIL: /data does not exist"
+        echo "=== Check cEOS images ==="
+        ls -la /data/sonic-vm/images/ 2>/dev/null || echo "INFO: /data/sonic-vm/images/ not found yet"
+        ls -la /data/ceos/ 2>/dev/null || echo "INFO: /data/ceos/ not found"
+        echo "=== Docker images ==="
+        docker images 2>/dev/null | head -20 || true
+        echo "=== Docker containers ==="
+        docker ps -a 2>/dev/null || true
+        echo "=== Diagnostics complete ==="
+      displayName: "Check prerequisites"
+      continueOnError: true
+
+    - script: |
+        sudo rm -rf $(Pipeline.Workspace)/target 2>/dev/null || true
+      displayName: "Cleanup"
+
+    - script: |
+        set -ex
+        LOG="$(Build.ArtifactStagingDirectory)/logs/sonic-mgmt-container-setup.log"
+        exec > >(tee -a "$LOG") 2>&1
+
+        if docker exec sonic-mgmt echo "sonic-mgmt container is running" 2>/dev/null; then
+          echo "sonic-mgmt container already running, nothing to do"
+          exit 0
+        fi
+
+        if docker ps -a --format '{{.Names}}' | grep -q '^sonic-mgmt$'; then
+          echo "sonic-mgmt container exists but stopped, starting it..."
+          docker start sonic-mgmt
+          sleep 5
+          if docker exec sonic-mgmt echo "OK" 2>/dev/null; then
+            echo "sonic-mgmt container started successfully"
+            exit 0
+          fi
+          echo "Failed to start existing container, removing and recreating..."
+          docker rm -f sonic-mgmt
+        fi
+
+        echo "Creating sonic-mgmt container using setup-container.sh..."
+        if ! which j2 &>/dev/null; then
+          echo "Installing j2cli (required by setup-container.sh)..."
+          pip3 install j2cli 2>/dev/null || sudo pip3 install j2cli 2>/dev/null || pip install j2cli 2>/dev/null || true
+        fi
+
+        if which j2 &>/dev/null; then
+          echo "Running setup-container.sh..."
+          /data/sonic-mgmt/setup-container.sh -n sonic-mgmt -d /data -v 2>&1 || {
+            echo "setup-container.sh failed, trying manual container creation..."
+          }
+        fi
+
+        if ! docker exec sonic-mgmt echo "OK" 2>/dev/null; then
+          echo "Trying to pull and create container manually..."
+          docker pull sonicdev-microsoft.azurecr.io:443/docker-sonic-mgmt:latest 2>&1 || true
+          if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q 'docker-sonic-mgmt'; then
+            IMG=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep 'docker-sonic-mgmt' | head -1)
+            echo "Creating container from image: $IMG"
+            docker run -d --name sonic-mgmt \
+              --privileged \
+              -v /data:/data:rslave \
+              -v /var/run/docker.sock:/var/run/docker.sock:rslave \
+              "$IMG" /bin/bash -c "while true; do sleep 3600; done"
+            sleep 5
+          fi
+        fi
+
+        if docker exec sonic-mgmt echo "OK" 2>/dev/null; then
+          echo "sonic-mgmt container is ready"
+        else
+          echo "ERROR: Failed to create sonic-mgmt container"
+          echo "Available docker images:"
+          docker images 2>/dev/null || true
+          exit 1
+        fi
+      displayName: "Ensure sonic-mgmt container exists"
+
+    - task: DownloadPipelineArtifact@2
+      inputs:
+        artifact: sonic-buildimage.vs
+      displayName: "Download sonic-buildimage.vs artifact"
+
+    - script: |
+        set -x
+        echo "=== Listing artifact contents ==="
+        ls -la $(Pipeline.Workspace)/target/ 2>/dev/null || true
+        ls -la ../target/ 2>/dev/null || true
+        find $(Pipeline.Workspace) -name 'sonic-vs.img.gz' -type f 2>/dev/null || true
+      displayName: "Debug artifact paths"
+
+    - script: |
+        set -x
+        LOG="$(Build.ArtifactStagingDirectory)/logs/clean-testbed.log"
+        exec > >(tee -a "$LOG") 2>&1
+
+        echo "=== Ensuring libvirtd is running ==="
+        sudo systemctl start libvirtd 2>/dev/null || sudo service libvirtd start 2>/dev/null || true
+        sleep 2
+        virsh -c qemu:///system list 2>/dev/null && echo "libvirt OK" || echo "libvirt still unavailable"
+
+        echo "=== Stopping ALL testbed containers for group vms6-1 ==="
+        for c in $(docker ps -a --format '{{.Names}}' | grep 'vms6-1'); do
+          echo "Stopping and removing container: $c"
+          docker stop "$c" 2>/dev/null || true
+          docker rm -f "$c" 2>/dev/null || true
+        done
+
+        echo "=== Cleaning cEOS data directories ==="
+        sudo rm -rf /data/ceos/ceos_vms6-1_* 2>/dev/null || true
+
+        echo "=== Removing stale vlab VMs ==="
+        if virsh -c qemu:///system list --all 2>/dev/null | grep -q vlab; then
+          for vm in $(virsh -c qemu:///system list --all --name 2>/dev/null | grep vlab); do
+            virsh -c qemu:///system destroy "$vm" 2>/dev/null || true
+            virsh -c qemu:///system undefine "$vm" 2>/dev/null || true
+          done
+        fi
+
+        echo "=== Verifying sonic-mgmt container still running ==="
+        if ! docker exec sonic-mgmt echo "OK" 2>/dev/null; then
+          echo "WARNING: sonic-mgmt container stopped during cleanup, restarting..."
+          docker start sonic-mgmt 2>/dev/null || true
+          sleep 5
+          docker exec sonic-mgmt echo "OK" 2>/dev/null || echo "ERROR: sonic-mgmt container failed to restart"
+        fi
+
+        echo "=== Remaining containers ==="
+        docker ps -a --format 'table {{.Names}}\t{{.Status}}' 2>/dev/null || true
+        echo "=== Cleanup complete ==="
+      displayName: "Clean existing testbed topology"
+      continueOnError: true
+
+    - script: |
+        set -ex
+        LOG="$(Build.ArtifactStagingDirectory)/logs/setup-testbed.log"
+        exec > >(tee -a "$LOG") 2>&1
+
+        VS_IMAGE=""
+        if [ -f "$(Pipeline.Workspace)/target/sonic-vs.img.gz" ]; then
+          VS_IMAGE="$(Pipeline.Workspace)/target/sonic-vs.img.gz"
+        elif [ -f "../target/sonic-vs.img.gz" ]; then
+          VS_IMAGE="../target/sonic-vs.img.gz"
+        else
+          VS_IMAGE=$(find $(Pipeline.Workspace) -name 'sonic-vs.img.gz' -type f | head -1)
+        fi
+        if [ -z "$VS_IMAGE" ]; then
+          echo "ERROR: sonic-vs.img.gz not found anywhere"
+          exit 1
+        fi
+        echo "Found VS image at: $VS_IMAGE"
+
+        sudo mkdir -p /data/sonic-vm/images
+        sudo cp -v "$VS_IMAGE" /data/sonic-vm/images/sonic-vs.img.gz
+        sudo gzip -fd /data/sonic-vm/images/sonic-vs.img.gz
+        username=$(id -un)
+        sudo chown -R $username.$username /data/sonic-vm
+
+        if [ ! -d /data/sonic-mgmt ]; then
+          echo "ERROR: /data/sonic-mgmt does not exist. Please set up sonic-mgmt on the build agent."
+          exit 1
+        fi
+
+        pushd /data/sonic-mgmt
+        git remote update
+        git reset --hard origin/master
+        sed -i s/use_own_value/${username}/ ansible/veos_vtb
+        echo aaa > ansible/password.txt
+
+        CEOS_TAG=$(docker images ceosimage --format '{{.Tag}}' | grep -v '<none>' | sort -V | tail -1)
+        if [ -n "$CEOS_TAG" ]; then
+          echo "Found existing cEOS image: ceosimage:$CEOS_TAG"
+          CEOS_ORIG="ceosimage:$CEOS_TAG"
+          CEOS_IMG="ceosimage:${CEOS_TAG}-1"
+          if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "ceosimage:${CEOS_TAG}-1"; then
+            CEOS_IMG="ceosimage:${CEOS_TAG}-1"
+          else
+            CEOS_IMG="$CEOS_ORIG"
+          fi
+          printf "ceos_image_filename: cEOS64-lab-%s.tar\nceos_image_orig: %s\nceos_image: %s\nceos_image_url: []\nskip_ceos_image_downloading: true\n" \
+            "$CEOS_TAG" "$CEOS_ORIG" "$CEOS_IMG" > ansible/group_vars/vm_host/ceos.yml
+          echo "Updated ceos.yml to match existing image:"
+          cat ansible/group_vars/vm_host/ceos.yml
+        else
+          echo "WARNING: No cEOS image found, using defaults from repo"
+        fi
+
+        echo "Running testbed-cli.sh refresh-dut..."
+        docker exec sonic-mgmt bash -c "pushd /data/sonic-mgmt/ansible;./testbed-cli.sh -d /data/sonic-vm -m $(inventory) -t $(testbed_file) -k ceos refresh-dut vms-kvm-t0 password.txt" && sleep 180
+      displayName: "Setup testbed"
+
+    - script: |
+        set -ex
+        LOG="$(Build.ArtifactStagingDirectory)/logs/update-sonic-mgmt.log"
+        exec > >(tee -a "$LOG") 2>&1
+
+        TARGET="/data/sonic-mgmt/tests/generic_config_updater/test_cacl.py"
+        echo "=== Patching test_cacl.py with config restore fix ==="
+        echo "Before patch:"
+        sed -n '49,53p' "$TARGET" || true
+
+        echo "aW1wb3J0IHN5cwp0YXJnZXQgPSBzeXMuYXJndlsxXQp3aXRoIG9wZW4odGFyZ2V0LCAncicpIGFzIGY6CiAgICBjb250ZW50ID0gZi5yZWFkKCkKb2xkID0gJ0BweXRlc3QuZml4dHVyZShzY29wZT0ibW9kdWxlIiwgYXV0b3VzZT1UcnVlKVxuZGVmIHJlc3RvcmVfdGVzdF9lbnYoZHV0aG9zdHMsIHJhbmRfb25lX2R1dF9mcm9udF9lbmRfaG9zdG5hbWUpOlxuICAgIGR1dGhvc3QgPSBkdXRob3N0c1tyYW5kX29uZV9kdXRfZnJvbnRfZW5kX2hvc3RuYW1lXVxuICAgIGNvbmZpZ19yZWxvYWQoZHV0aG9zdCwgY29uZmlnX3NvdXJjZT0ibWluaWdyYXBoIiwgc2FmZV9yZWxvYWQ9VHJ1ZSlcbiAgICB5aWVsZCcKbmV3ID0gJ0BweXRlc3QuZml4dHVyZShzY29wZT0ibW9kdWxlIiwgYXV0b3VzZT1UcnVlKVxuZGVmIHJlc3RvcmVfdGVzdF9lbnYoZHV0aG9zdHMsIHJhbmRfb25lX2R1dF9mcm9udF9lbmRfaG9zdG5hbWUpOlxuICAgIGR1dGhvc3QgPSBkdXRob3N0c1tyYW5kX29uZV9kdXRfZnJvbnRfZW5kX2hvc3RuYW1lXVxuICAgIGR1dGhvc3Quc2hlbGwoImNwIC9ldGMvc29uaWMvY29uZmlnX2RiLmpzb24gL2V0Yy9zb25pYy9jb25maWdfZGIuanNvbi5iZWZvcmVfY2FjbCIpXG4gICAgY29uZmlnX3JlbG9hZChkdXRob3N0LCBjb25maWdfc291cmNlPSJtaW5pZ3JhcGgiLCBzYWZlX3JlbG9hZD1UcnVlKVxuICAgIHlpZWxkXG4gICAgbG9nZ2VyLmluZm8oIlJlc3RvcmluZyBvcmlnaW5hbCBjb25maWdfZGIuanNvbiBhZnRlciB0ZXN0X2NhY2wgbW9kdWxlIilcbiAgICBkdXRob3N0LnNoZWxsKCJjcCAvZXRjL3NvbmljL2NvbmZpZ19kYi5qc29uLmJlZm9yZV9jYWNsIC9ldGMvc29uaWMvY29uZmlnX2RiLmpzb24iKVxuICAgIGNvbmZpZ19yZWxvYWQoZHV0aG9zdCwgc2FmZV9yZWxvYWQ9VHJ1ZSlcbiAgICBkdXRob3N0LnNoZWxsKCJybSAtZiAvZXRjL3NvbmljL2NvbmZpZ19kYi5qc29uLmJlZm9yZV9jYWNsIiknCmlmIG9sZCBpbiBjb250ZW50OgogICAgY29udGVudCA9IGNvbnRlbnQucmVwbGFjZShvbGQsIG5ldykKICAgIHdpdGggb3Blbih0YXJnZXQsICd3JykgYXMgZjoKICAgICAgICBmLndyaXRlKGNvbnRlbnQpCiAgICBwcmludCgnU1VDQ0VTUzogdGVzdF9jYWNsLnB5IHBhdGNoZWQnKQplbHNlOgogICAgcHJpbnQoJ1dBUk5JTkc6IFBhdHRlcm4gbm90IGZvdW5kLCBjaGVja2luZyBmaWxlIGNvbnRlbnQuLi4nKQogICAgZm9yIGksIGxpbmUgaW4gZW51bWVyYXRlKGNvbnRlbnQuc3BsaXQoJ1xuJyksIDEpOgogICAgICAgIGlmICdyZXN0b3JlX3Rlc3RfZW52JyBpbiBsaW5lIG9yICdiZWZvcmVfY2FjbCcgaW4gbGluZToKICAgICAgICAgICAgcHJpbnQoZicgIExpbmUge2l9OiB7bGluZX0nKQo=" | base64 -d > /tmp/patch_cacl.py
+        python3 /tmp/patch_cacl.py "$TARGET"
+
+        echo "After patch:"
+        sed -n '49,62p' "$TARGET" || true
+
+        echo "=== Fixing kvmtest.sh: test_ipv6.py was renamed to test_ip_bgp.py ==="
+        KVMTEST="/data/sonic-mgmt/tests/kvmtest.sh"
+        sed -i 's|generic_config_updater/test_ipv6\.py|generic_config_updater/test_ip_bgp.py|g' "$KVMTEST"
+        echo "kvmtest.sh patched"
+      displayName: "Patch sonic-mgmt with upstream fixes"
+      continueOnError: true
+
+    - script: |
+        LOG="$(Build.ArtifactStagingDirectory)/logs/kvmtest-run.log"
+        docker exec sonic-mgmt bash -c "/data/sonic-mgmt/tests/kvmtest.sh -en -T t0 vms-kvm-t0 vlab-01" 2>&1 | tee -a "$LOG"
+        exit ${PIPESTATUS[0]}
+      displayName: "Run tests"
+
+    - script: |
+        mkdir -p $(Build.ArtifactStagingDirectory)/kvmdump || true
+        virsh_version=$(virsh --version 2>/dev/null) || true
+        if [ -n "$virsh_version" ]; then
+            virsh -c qemu:///system list || true
+            virsh -c qemu:///system save vlab-01 $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.memdmp 2>/dev/null || true
+            virsh -c qemu:///system dumpxml vlab-01 > $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.xml 2>/dev/null || true
+            img=$(virsh -c qemu:///system domblklist vlab-01 2>/dev/null | grep vda | awk '{print $2}')
+            if [ -n "$img" ] && [ -f "$img" ]; then
+              cp $img $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.img
+              gzip $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.img
+            fi
+            if [ -f $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.memdmp ]; then
+              sudo gzip $(Build.ArtifactStagingDirectory)/kvmdump/vlab-01.memdmp
+            fi
+            virsh -c qemu:///system undefine vlab-01 2>/dev/null || true
+        fi
+        docker commit ptf_vms-kvm-t0 docker-ptf:$(Build.BuildNumber) 2>/dev/null || true
+        docker save docker-ptf:$(Build.BuildNumber) 2>/dev/null | gzip -c > $(Build.ArtifactStagingDirectory)/kvmdump/docker-ptf-dump.gz 2>/dev/null || true
+        docker rmi docker-ptf:$(Build.BuildNumber) 2>/dev/null || true
+      displayName: "Collect kvmdump"
+      condition: failed()
+
+    - script: |
+        mkdir -p $(Build.ArtifactStagingDirectory)/logs || true
+        cp -r /data/sonic-mgmt/tests/logs/* $(Build.ArtifactStagingDirectory)/logs/ 2>/dev/null || true
+        username=$(id -un)
+        sudo chown -R $username.$username $(Build.ArtifactStagingDirectory)
+      displayName: "Collect test logs"
+      condition: succeededOrFailed()
+
+    - script: |
+        if [ -d "$(Build.ArtifactStagingDirectory)/kvmdump" ] && [ "$(ls -A $(Build.ArtifactStagingDirectory)/kvmdump 2>/dev/null)" ]; then
+          echo "##vso[task.setvariable variable=HAS_KVMDUMP]true"
+        else
+          echo "No kvmdump files to publish"
+          echo "##vso[task.setvariable variable=HAS_KVMDUMP]false"
+        fi
+        if [ -d "$(Build.ArtifactStagingDirectory)/logs" ] && [ "$(ls -A $(Build.ArtifactStagingDirectory)/logs 2>/dev/null)" ]; then
+          echo "##vso[task.setvariable variable=HAS_LOGS]true"
+        else
+          echo "No log files to publish"
+          echo "##vso[task.setvariable variable=HAS_LOGS]false"
+        fi
+        XML_COUNT=$(find $(Build.ArtifactStagingDirectory)/logs -name '*.xml' 2>/dev/null | wc -l)
+        if [ "$XML_COUNT" -gt 0 ]; then
+          echo "##vso[task.setvariable variable=HAS_XML]true"
+        else
+          echo "No XML test result files found"
+          echo "##vso[task.setvariable variable=HAS_XML]false"
+        fi
+      displayName: "Check publishable artifacts"
+      condition: succeededOrFailed()
+
+    - publish: $(Build.ArtifactStagingDirectory)/kvmdump
+      artifact: sonic-buildimage.kvmtest.t0.memdump@$(System.JobAttempt)
+      displayName: "Archive sonic kvm memdump"
+      condition: and(failed(), eq(variables.HAS_KVMDUMP, 'true'))
+
+    - publish: $(Build.ArtifactStagingDirectory)/logs
+      artifact: sonic-buildimage.kvmtest.t0.log@$(System.JobAttempt)
+      displayName: "Archive sonic kvm logs"
+      condition: and(succeededOrFailed(), eq(variables.HAS_LOGS, 'true'))
+
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFiles: '$(Build.ArtifactStagingDirectory)/logs/**/*.xml'
+        testRunTitle: kvmtest.t0
+      condition: and(succeededOrFailed(), eq(variables.HAS_XML, 'true'))
+
+    - template: .azure-pipelines/post-failure-to-github.yml
+      parameters:
+        jobName: 'kvmtest-t0'
+        logDirectory: '$(Build.ArtifactStagingDirectory)/logs'
+
 # Platform builds commented out - no DUTs available for testing
 # - stage: Build
 #   pool: sonic-build

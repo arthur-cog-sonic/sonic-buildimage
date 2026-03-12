@@ -1,6 +1,6 @@
 # Template to post build failure logs to GitHub PR comments
-# This template should be included in build pipelines and runs on failure
-# It formats logs neatly using collapsible sections to avoid overwhelming comments
+# Posts error summaries and log tails so Devin and reviewers can see failures.
+# Handles large logs by limiting per-file output and rebuilding if oversized.
 
 parameters:
 - name: jobName
@@ -11,10 +11,10 @@ parameters:
   default: 'target'
 - name: maxLogLines
   type: number
-  default: 200
+  default: 80
 - name: maxErrorLines
   type: number
-  default: 50
+  default: 30
 
 steps:
 - bash: |
@@ -56,165 +56,222 @@ steps:
       echo ""
     } > "$COMMENT_FILE"
     
-    # Function to extract and format error lines from a log
     extract_errors() {
       local file="$1"
       local max_lines="$2"
-      # Look for common error patterns and extract context
-      grep -n -i -E "(error|failed|fatal|exception|cannot|undefined|not found)" "$file" 2>/dev/null | head -n "$max_lines" || true
+      grep -n -i -E "(error[^s_]|ERROR|FAILED|fatal:|FATAL|exception|cannot |CANNOT |not found|exit 1|exit code|returned non-zero|rc=[1-9]|AssertionError|assert .* ==|FAILURES|short test summary)" "$file" 2>/dev/null | head -n "$max_lines" || true
     }
     
-    # Find and process log files
+    extract_pytest_summary() {
+      local file="$1"
+      local summary=""
+      summary=$(sed -n '/=.*short test summary/,/=====/{p}' "$file" 2>/dev/null | head -40)
+      if [ -z "$summary" ]; then
+        summary=$(grep -A 5 -E "^(FAILED|ERROR|=+ .* (failed|passed|error))" "$file" 2>/dev/null | tail -20)
+      fi
+      echo "$summary"
+    }
+    
     LOG_COUNT=0
     TOTAL_ERRORS=0
     
     if [ -d "$LOG_DIR" ]; then
-      # Find all .log files, sorted by modification time (newest first)
-      LOG_FILES=$(find "$LOG_DIR" -name "*.log" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -10 | cut -d' ' -f2-)
+      LOG_FILES=$(find "$LOG_DIR" -maxdepth 1 -name "*.log" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -10 | cut -d' ' -f2-)
       
       if [ -n "$LOG_FILES" ]; then
         for log_file in $LOG_FILES; do
           LOG_COUNT=$((LOG_COUNT + 1))
           log_name=$(basename "$log_file")
-          log_size=$(wc -l < "$log_file" 2>/dev/null || echo "0")
+          log_lines=$(wc -l < "$log_file" 2>/dev/null || echo "0")
+          log_bytes=$(wc -c < "$log_file" 2>/dev/null || echo "0")
           
-          # Extract errors first
           ERRORS=$(extract_errors "$log_file" "$MAX_ERROR_LINES")
-          ERROR_COUNT=$(echo "$ERRORS" | grep -c . || echo "0")
+          ERROR_COUNT=0
+          if [ -n "$ERRORS" ]; then
+            ERROR_COUNT=$(echo "$ERRORS" | grep -c . 2>/dev/null || echo "0")
+          fi
           TOTAL_ERRORS=$((TOTAL_ERRORS + ERROR_COUNT))
           
-          echo "<details>" >> "$COMMENT_FILE"
-          if [ "$ERROR_COUNT" -gt 0 ]; then
-            echo "<summary>:warning: <b>$log_name</b> ($ERROR_COUNT errors, $log_size lines total)</summary>" >> "$COMMENT_FILE"
-          else
-            echo "<summary><b>$log_name</b> ($log_size lines)</summary>" >> "$COMMENT_FILE"
-          fi
-          echo "" >> "$COMMENT_FILE"
-          
-          # Show errors section if any
-          if [ "$ERROR_COUNT" -gt 0 ]; then
-            echo "**Errors found:**" >> "$COMMENT_FILE"
-            echo '```' >> "$COMMENT_FILE"
-            echo "$ERRORS" >> "$COMMENT_FILE"
-            echo '```' >> "$COMMENT_FILE"
-            echo "" >> "$COMMENT_FILE"
+          PYTEST_SUMMARY=""
+          if echo "$log_name" | grep -qi "kvmtest\|pytest\|test.*run"; then
+            PYTEST_SUMMARY=$(extract_pytest_summary "$log_file")
           fi
           
-          # Show tail of log
-          echo "**Last $MAX_LINES lines:**" >> "$COMMENT_FILE"
-          echo '```' >> "$COMMENT_FILE"
-          if [ "$log_size" -gt "$MAX_LINES" ]; then
-            tail -n "$MAX_LINES" "$log_file" >> "$COMMENT_FILE"
-          else
-            cat "$log_file" >> "$COMMENT_FILE"
+          {
+            echo "<details>"
+            if [ "$ERROR_COUNT" -gt 0 ]; then
+              echo "<summary>:warning: <b>$log_name</b> ($ERROR_COUNT errors, $log_lines lines, ${log_bytes}B)</summary>"
+            else
+              echo "<summary>:page_facing_up: <b>$log_name</b> ($log_lines lines, ${log_bytes}B)</summary>"
+            fi
+            echo ""
+          } >> "$COMMENT_FILE"
+          
+          if [ -n "$PYTEST_SUMMARY" ]; then
+            {
+              echo "**Pytest summary:**"
+              echo '```'
+              echo "$PYTEST_SUMMARY"
+              echo '```'
+              echo ""
+            } >> "$COMMENT_FILE"
           fi
-          echo '```' >> "$COMMENT_FILE"
-          echo "</details>" >> "$COMMENT_FILE"
-          echo "" >> "$COMMENT_FILE"
+          
+          if [ "$ERROR_COUNT" -gt 0 ]; then
+            {
+              echo "**Error lines:**"
+              echo '```'
+              echo "$ERRORS"
+              echo '```'
+              echo ""
+            } >> "$COMMENT_FILE"
+          fi
+          
+          {
+            echo "**Tail ($MAX_LINES lines):**"
+            echo '```'
+            tail -n "$MAX_LINES" "$log_file" 2>/dev/null || echo "(failed to read file)"
+            echo '```'
+            echo "</details>"
+            echo ""
+          } >> "$COMMENT_FILE"
         done
       fi
     fi
     
-    # Check for the main build output log first (captures early-stage errors)
-    # This is the most important log as it captures everything including makefile parsing errors
-    BUILD_OUTPUT_LOG="$LOG_DIR/build-output.log"
-    if [ -f "$BUILD_OUTPUT_LOG" ]; then
-      LOG_COUNT=$((LOG_COUNT + 1))
-      log_name="build-output.log"
-      log_size=$(wc -l < "$BUILD_OUTPUT_LOG" 2>/dev/null || echo "0")
-      
-      # Extract errors from build output
-      ERRORS=$(extract_errors "$BUILD_OUTPUT_LOG" "$MAX_ERROR_LINES")
-      ERROR_COUNT=$(echo "$ERRORS" | grep -c . || echo "0")
-      TOTAL_ERRORS=$((TOTAL_ERRORS + ERROR_COUNT))
-      
-      # This log is shown expanded by default (no <details> wrapper) since it's the primary log
-      echo "### :page_facing_up: Build Output Log" >> "$COMMENT_FILE"
-      echo "" >> "$COMMENT_FILE"
-      
-      if [ "$ERROR_COUNT" -gt 0 ]; then
-        echo "**:warning: $ERROR_COUNT error(s) detected:**" >> "$COMMENT_FILE"
-        echo '```' >> "$COMMENT_FILE"
-        echo "$ERRORS" >> "$COMMENT_FILE"
-        echo '```' >> "$COMMENT_FILE"
-        echo "" >> "$COMMENT_FILE"
-      fi
-      
-      echo "<details>" >> "$COMMENT_FILE"
-      echo "<summary>Full log output (last $MAX_LINES of $log_size lines)</summary>" >> "$COMMENT_FILE"
-      echo "" >> "$COMMENT_FILE"
-      echo '```' >> "$COMMENT_FILE"
-      if [ "$log_size" -gt "$MAX_LINES" ]; then
-        tail -n "$MAX_LINES" "$BUILD_OUTPUT_LOG" >> "$COMMENT_FILE"
-      else
-        cat "$BUILD_OUTPUT_LOG" >> "$COMMENT_FILE"
-      fi
-      echo '```' >> "$COMMENT_FILE"
-      echo "</details>" >> "$COMMENT_FILE"
-      echo "" >> "$COMMENT_FILE"
-    fi
-    
-    # Also check for other common build output locations as fallback
-    for extra_log in "/tmp/build-output.log" "/tmp/build.log" "$BUILD_SOURCESDIRECTORY/target/*.log"; do
-      # Skip if we already processed this file
-      if [ "$extra_log" = "$BUILD_OUTPUT_LOG" ]; then
-        continue
-      fi
+    for extra_log in "/tmp/build-output.log" "/tmp/build.log"; do
       if [ -f "$extra_log" ] 2>/dev/null; then
         LOG_COUNT=$((LOG_COUNT + 1))
         log_name=$(basename "$extra_log")
-        log_size=$(wc -l < "$extra_log" 2>/dev/null || echo "0")
-        
-        # Extract errors
+        log_lines=$(wc -l < "$extra_log" 2>/dev/null || echo "0")
         ERRORS=$(extract_errors "$extra_log" "$MAX_ERROR_LINES")
-        ERROR_COUNT=$(echo "$ERRORS" | grep -c . || echo "0")
+        ERROR_COUNT=0
+        if [ -n "$ERRORS" ]; then
+          ERROR_COUNT=$(echo "$ERRORS" | grep -c . 2>/dev/null || echo "0")
+        fi
         TOTAL_ERRORS=$((TOTAL_ERRORS + ERROR_COUNT))
-        
-        echo "<details>" >> "$COMMENT_FILE"
-        if [ "$ERROR_COUNT" -gt 0 ]; then
-          echo "<summary>:warning: <b>$log_name</b> ($ERROR_COUNT errors, $log_size lines)</summary>" >> "$COMMENT_FILE"
-        else
-          echo "<summary><b>$log_name</b> ($log_size lines)</summary>" >> "$COMMENT_FILE"
-        fi
-        echo "" >> "$COMMENT_FILE"
-        
-        if [ "$ERROR_COUNT" -gt 0 ]; then
-          echo "**Errors found:**" >> "$COMMENT_FILE"
-          echo '```' >> "$COMMENT_FILE"
-          echo "$ERRORS" >> "$COMMENT_FILE"
-          echo '```' >> "$COMMENT_FILE"
-          echo "" >> "$COMMENT_FILE"
-        fi
-        
-        echo '```' >> "$COMMENT_FILE"
-        if [ "$log_size" -gt "$MAX_LINES" ]; then
-          echo "... (showing last $MAX_LINES of $log_size lines) ..." >> "$COMMENT_FILE"
-          tail -n "$MAX_LINES" "$extra_log" >> "$COMMENT_FILE"
-        else
-          cat "$extra_log" >> "$COMMENT_FILE"
-        fi
-        echo '```' >> "$COMMENT_FILE"
-        echo "</details>" >> "$COMMENT_FILE"
-        echo "" >> "$COMMENT_FILE"
+        {
+          echo "<details>"
+          if [ "$ERROR_COUNT" -gt 0 ]; then
+            echo "<summary>:warning: <b>$log_name</b> ($ERROR_COUNT errors, $log_lines lines)</summary>"
+          else
+            echo "<summary>:page_facing_up: <b>$log_name</b> ($log_lines lines)</summary>"
+          fi
+          echo ""
+          if [ "$ERROR_COUNT" -gt 0 ]; then
+            echo "**Error lines:**"
+            echo '```'
+            echo "$ERRORS"
+            echo '```'
+            echo ""
+          fi
+          echo "**Tail ($MAX_LINES lines):**"
+          echo '```'
+          tail -n "$MAX_LINES" "$extra_log" 2>/dev/null || true
+          echo '```'
+          echo "</details>"
+          echo ""
+        } >> "$COMMENT_FILE"
       fi
     done
     
-    # If no log files found, provide helpful message
+    {
+      echo "<details>"
+      echo "<summary>:gear: <b>Environment snapshot</b></summary>"
+      echo ""
+      echo '```'
+      echo "=== Docker containers ==="
+      docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null | head -20 || echo "(docker ps failed)"
+      echo ""
+      echo "=== Log directory ==="
+      ls -la "$LOG_DIR"/ 2>/dev/null || echo "(not found: $LOG_DIR)"
+      echo ""
+      echo "=== Disk usage ==="
+      df -h / /data 2>/dev/null || true
+      echo '```'
+      echo "</details>"
+      echo ""
+    } >> "$COMMENT_FILE"
+    
     if [ "$LOG_COUNT" -eq 0 ]; then
-      echo "<details>" >> "$COMMENT_FILE"
-      echo "<summary>:information_source: No log files found</summary>" >> "$COMMENT_FILE"
-      echo "" >> "$COMMENT_FILE"
-      echo "No \`.log\` files were found in \`$LOG_DIR\`." >> "$COMMENT_FILE"
-      echo "" >> "$COMMENT_FILE"
-      echo "The build may have failed before generating logs, or logs are stored elsewhere." >> "$COMMENT_FILE"
-      echo "</details>" >> "$COMMENT_FILE"
-      echo "" >> "$COMMENT_FILE"
+      {
+        echo ":information_source: **No \`.log\` files found in \`$LOG_DIR\`.** Check [build logs]($BUILD_URL) directly."
+        echo ""
+      } >> "$COMMENT_FILE"
     fi
     
-    # Add summary line
-    if [ "$TOTAL_ERRORS" -gt 0 ]; then
-      echo "---" >> "$COMMENT_FILE"
-      echo ":mag: **$TOTAL_ERRORS error(s)** found across **$LOG_COUNT log file(s)**" >> "$COMMENT_FILE"
+    {
+      echo "---"
+      if [ "$TOTAL_ERRORS" -gt 0 ]; then
+        echo ":mag: **$TOTAL_ERRORS error(s)** across **$LOG_COUNT log file(s)**"
+      else
+        echo ":mag: **$LOG_COUNT log file(s)** processed, **0 error patterns matched** — check log tails above"
+      fi
+    } >> "$COMMENT_FILE"
+    
+    COMMENT_SIZE=$(wc -c < "$COMMENT_FILE")
+    echo "Comment size: $COMMENT_SIZE bytes"
+    if [ "$COMMENT_SIZE" -gt 55000 ]; then
+      echo "Comment too large ($COMMENT_SIZE bytes), rebuilding with reduced output..."
+      REDUCED_FILE=$(mktemp)
+      {
+        echo "## :x: Build Failed: \`$JOB_NAME\`"
+        echo ""
+        echo "**Build:** [#$BUILD_ID]($BUILD_URL) | **Commit:** \`${BUILD_SOURCEVERSION:0:7}\`"
+        echo ""
+        echo ":scissors: *Full comment was ${COMMENT_SIZE} bytes (limit ~55KB). Showing condensed version.*"
+        echo ""
+      } > "$REDUCED_FILE"
+      
+      if [ -d "$LOG_DIR" ]; then
+        for log_file in $(find "$LOG_DIR" -maxdepth 1 -name "*.log" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -10 | cut -d' ' -f2-); do
+          log_name=$(basename "$log_file")
+          log_lines=$(wc -l < "$log_file" 2>/dev/null || echo "0")
+          ERRORS=$(extract_errors "$log_file" 15)
+          PYTEST_SUMMARY=""
+          if echo "$log_name" | grep -qi "kvmtest\|pytest\|test.*run"; then
+            PYTEST_SUMMARY=$(extract_pytest_summary "$log_file")
+          fi
+          {
+            echo "<details>"
+            echo "<summary><b>$log_name</b> ($log_lines lines)</summary>"
+            echo ""
+          } >> "$REDUCED_FILE"
+          if [ -n "$PYTEST_SUMMARY" ]; then
+            {
+              echo "**Pytest summary:**"
+              echo '```'
+              echo "$PYTEST_SUMMARY"
+              echo '```'
+              echo ""
+            } >> "$REDUCED_FILE"
+          fi
+          if [ -n "$ERRORS" ]; then
+            {
+              echo "**Error lines:**"
+              echo '```'
+              echo "$ERRORS"
+              echo '```'
+              echo ""
+            } >> "$REDUCED_FILE"
+          fi
+          {
+            echo "**Tail (30 lines):**"
+            echo '```'
+            tail -n 30 "$log_file" 2>/dev/null || true
+            echo '```'
+            echo "</details>"
+            echo ""
+          } >> "$REDUCED_FILE"
+        done
+      fi
+      
+      {
+        echo "---"
+        echo ":mag: **$TOTAL_ERRORS error(s)** across **$LOG_COUNT log(s)** (condensed)"
+      } >> "$REDUCED_FILE"
+      
+      mv "$REDUCED_FILE" "$COMMENT_FILE"
     fi
     
     # Read the comment content
